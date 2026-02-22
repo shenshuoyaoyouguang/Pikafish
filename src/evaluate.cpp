@@ -50,16 +50,18 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     Value nnue = psqt + positional;
 
     // Blend optimism and eval with nnue complexity
-    // Aggressive style: amplify optimism in complex attacking positions
+    // Aggressive style: moderate optimism amplification for stable endgame
     int nnueComplexity = std::abs(psqt - positional);
-    optimism += optimism * nnueComplexity / 300;
+    optimism += optimism * nnueComplexity / 380;
     nnue -= nnue * nnueComplexity / 15000;
 
     int material = pos.major_material();
-    int v        = (nnue * (17380 + material) + optimism * (3061 + material)) / 20582;
+    // Endgame optimization: higher optimism weight to convert advantages
+    int v        = (nnue * (15500 + material) + optimism * (4900 + material)) / 20582;
 
     // Damp down the evaluation linearly when shuffling
-    v -= (v * pos.rule60_count()) / 253;
+    // Slower decay to preserve advantage evaluation in endgame
+    v -= (v * pos.rule60_count()) / 380;
 
     // Guarantee evaluation does not hit the mate range
     v = std::clamp(v, VALUE_MATED_IN_MAX_PLY + 1, VALUE_MATE_IN_MAX_PLY - 1);
