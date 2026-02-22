@@ -325,7 +325,8 @@ void Search::Worker::iterative_deepening() {
             beta      = std::min(avg + delta, VALUE_INFINITE);
 
             // Adjust optimism based on root move's averageScore
-            optimism[us]  = 92 * avg / (std::abs(avg) + 95);
+            // Aggressive style: higher coefficient and lower denominator for more optimistic evaluation
+            optimism[us]  = 150 * avg / (std::abs(avg) + 80);
             optimism[~us] = -optimism[us];
 
             // Start with a small aspiration window and, in the case of a fail
@@ -775,7 +776,8 @@ Value Search::Worker::search(
     // Step 6. Razoring
     // If eval is really low, skip search entirely and return the qsearch value.
     // For PvNodes, we must have a guard against mates being returned.
-    if (!PvNode && eval < alpha - 1370 - 244 * depth * depth)
+    // Aggressive style: less aggressive razoring to search more attacking opportunities
+    if (!PvNode && eval < alpha - 1800 - 300 * depth * depth)
         return qsearch<NonPV>(pos, ss, alpha, beta);
 
     // Step 7. Futility pruning: child node

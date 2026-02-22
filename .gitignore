@@ -15,3 +15,6 @@ src/-lstdc++.res
 # Neural network for the NNUE evaluation
 **/*.nnue
 
+# External source code (not part of Pikafish)
+Stockfish-sf_18/
+

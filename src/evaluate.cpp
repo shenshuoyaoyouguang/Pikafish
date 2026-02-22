@@ -50,9 +50,10 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     Value nnue = psqt + positional;
 
     // Blend optimism and eval with nnue complexity
+    // Aggressive style: amplify optimism in complex attacking positions
     int nnueComplexity = std::abs(psqt - positional);
-    optimism += optimism * nnueComplexity / 465;
-    nnue -= nnue * nnueComplexity / 11743;
+    optimism += optimism * nnueComplexity / 300;
+    nnue -= nnue * nnueComplexity / 15000;
 
     int material = pos.major_material();
     int v        = (nnue * (17380 + material) + optimism * (3061 + material)) / 20582;
