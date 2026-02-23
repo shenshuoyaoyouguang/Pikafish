@@ -293,7 +293,13 @@ inline int popcount(Bitboard b) {
 inline Square lsb(Bitboard b) {
     assert(b);
 
-#if defined(_MSC_VER)  // MSVC
+#if defined(_MSC_VER) && defined(__clang__)  // clang on Windows
+    // Use builtin for clang
+    if (uint64_t(b))
+        return Square(__builtin_ctzll(uint64_t(b)));
+    return Square(__builtin_ctzll(uint64_t(b >> 64)) + 64);
+
+#elif defined(_MSC_VER)  // MSVC
 
     unsigned long idx;
     if (b._Word[0])

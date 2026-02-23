@@ -73,6 +73,10 @@ struct StateInfo {
     mutable Key     mateThreatKey;       // 计算时的局面 key (8 字节)
     mutable bool    mateThreatComputed;  // 是否已计算 (1 字节)
     mutable bool    mateThreat;          // 杀着威胁标记 (1 字节)
+    
+    // 重复局面判定缓存（中国象棋规则）
+    mutable uint16_t chaseState;         // 捉子状态位图（低 8 位：己方捉子，高 8 位：对方捉子）
+    mutable bool     chaseStateComputed; // 捉子状态是否已计算
 };
 
 // 验证 StateInfo 结构体尺寸优化
@@ -205,6 +209,11 @@ class Position {
     Value                 detect_chases(int d, int ply = 0);
     bool                  chase_legal(Move m) const;
     Key                   adjust_key60(Key k) const;
+    
+    // 重复局面判定辅助函数（中国象棋规则）
+    uint16_t              get_chase_state() const;        // 获取捉子状态
+    void                  compute_chase_state() const;    // 计算并缓存捉子状态
+    Value                 evaluate_repetition(int cycleStats[COLOR_NB][3], int ply) const;
 
     // Data members
     std::array<Piece, SQUARE_NB>        board;

@@ -495,6 +495,133 @@ bool Position::has_mate_threat() const {
 }
 
 
+// Computes and caches the chase state for the current position
+// Returns a 16-bit bitmap:
+// - Bits 0-7: chasing pieces for side to move
+// - Bits 8-15: chasing pieces for the opponent
+void Position::compute_chase_state() const {
+    // 快速路径：检查缓存
+    if (st->chaseStateComputed)
+        return;
+    
+    // 如果已经被将军，则不存在捉子
+    if (checkers())
+    {
+        st->chaseState = 0;
+        st->chaseStateComputed = true;
+        return;
+    }
+    
+    // 计算双方的捉子状态
+    // 注意：chased() 函数会临时修改 sideToMove，但使用 RAII guard 恢复
+    // 因此需要使用 const_cast 来调用
+    Position* self = const_cast<Position*>(this);
+    uint16_t chaseState = 0;
+    
+    // 计算己方捉子（保留完整的位图信息）
+    uint16_t myChase = self->chased(sideToMove);
+    chaseState |= (myChase & 0x00FF);  // 保留低 8 位
+    
+    // 计算对方捉子（保留完整的位图信息）
+    uint16_t theirChase = self->chased(~sideToMove);
+    chaseState |= (theirChase & 0xFF00);  // 保留高 8 位
+    
+    st->chaseState = chaseState;
+    st->chaseStateComputed = true;
+}
+
+
+// Returns the chase state, computing it if necessary
+uint16_t Position::get_chase_state() const {
+    const_cast<Position*>(this)->compute_chase_state();
+    return st->chaseState;
+}
+
+
+// Evaluates the repetition result based on cycle statistics
+// cycleStats[color][0] = check count (将军次数)
+// cycleStats[color][1] = chase count (捉子次数)
+// cycleStats[color][2] = mate threat count (杀着威胁次数)
+Value Position::evaluate_repetition(int cycleStats[COLOR_NB][3], int ply) const {
+    Color us = side_to_move();
+    Color them = ~us;
+    
+    // 每方平均走法数（用于频率计算）
+    // 注意：cycleStats 统计的是双方在循环内的行为次数
+    int halfMoves = cycleStats[us][0] + cycleStats[us][1] + cycleStats[us][2];
+    if (halfMoves == 0)
+        halfMoves = cycleStats[them][0] + cycleStats[them][1] + cycleStats[them][2];
+    
+    if (halfMoves == 0)
+        return VALUE_DRAW;
+    
+    // 统计各类行为频率（阈值 50%：行为次数 * 2 >= 总走法数）
+    bool usChecking = (cycleStats[us][0] * 2 >= halfMoves);
+    bool themChecking = (cycleStats[them][0] * 2 >= halfMoves);
+    bool usChasing = (cycleStats[us][1] * 2 >= halfMoves);
+    bool themChasing = (cycleStats[them][1] * 2 >= halfMoves);
+    bool usMateThreat = (cycleStats[us][2] * 2 >= halfMoves);
+    bool themMateThreat = (cycleStats[them][2] * 2 >= halfMoves);
+    
+    // 中国象棋竞赛规则（2020 版）优先级判定
+    
+    // 1. 单方长将 → 判负
+    if (themChecking && !usChecking)
+        return mated_in(ply);
+    if (usChecking && !themChecking)
+        return mate_in(ply);
+    
+    // 2. 一将一捉（交替将军和捉子）→ 判负
+    // 检查：将军 + 捉子 >= 50% 且 将军>0 且 捉子>0
+    bool usOneCheckOneChase = (cycleStats[us][0] > 0 && cycleStats[us][1] > 0 
+                               && (cycleStats[us][0] + cycleStats[us][1]) * 2 >= halfMoves);
+    bool themOneCheckOneChase = (cycleStats[them][0] > 0 && cycleStats[them][1] > 0 
+                                 && (cycleStats[them][0] + cycleStats[them][1]) * 2 >= halfMoves);
+    
+    if (themOneCheckOneChase && !usOneCheckOneChase && !usChecking)
+        return mated_in(ply);
+    if (usOneCheckOneChase && !themOneCheckOneChase && !themChecking)
+        return mate_in(ply);
+    
+    // 3. 一将一杀（交替将军和杀着威胁）→ 判负
+    bool usOneCheckOneMate = (cycleStats[us][0] > 0 && cycleStats[us][2] > 0 
+                              && (cycleStats[us][0] + cycleStats[us][2]) * 2 >= halfMoves);
+    bool themOneCheckOneMate = (cycleStats[them][0] > 0 && cycleStats[them][2] > 0 
+                                && (cycleStats[them][0] + cycleStats[them][2]) * 2 >= halfMoves);
+    
+    if (themOneCheckOneMate && !usOneCheckOneMate && !usChecking)
+        return mated_in(ply);
+    if (usOneCheckOneMate && !themOneCheckOneMate && !themChecking)
+        return mate_in(ply);
+    
+    // 4. 长捉 → 判负
+    if (themChasing && !usChasing)
+        return mated_in(ply);
+    if (usChasing && !themChasing)
+        return mate_in(ply);
+    
+    // 5. 长杀 → 判负
+    if (themMateThreat && !usMateThreat)
+        return mated_in(ply);
+    if (usMateThreat && !themMateThreat)
+        return mate_in(ply);
+    
+    // 6. 一捉一杀（交替捉子和杀着威胁）→ 判负
+    bool usOneChaseOneMate = (cycleStats[us][1] > 0 && cycleStats[us][2] > 0 
+                              && (cycleStats[us][1] + cycleStats[us][2]) * 2 >= halfMoves);
+    bool themOneChaseOneMate = (cycleStats[them][1] > 0 && cycleStats[them][2] > 0 
+                                && (cycleStats[them][1] + cycleStats[them][2]) * 2 >= halfMoves);
+    
+    if (themOneChaseOneMate && !usOneChaseOneMate)
+        return mated_in(ply);
+    if (usOneChaseOneMate && !themOneChaseOneMate)
+        return mate_in(ply);
+    
+    // 7. 双方同等违规 → 判和
+    return VALUE_DRAW;
+}
+
+
 // Makes a move, and saves all information necessary
 // to a StateInfo object. The move is assumed to be legal. Pseudo-legal
 // moves should be filtered out before this function is called.
@@ -525,6 +652,11 @@ void Position::do_move(Move                      m,
     newSt.previous = st;
     st             = &newSt;
     st->move       = m;
+    
+    // 初始化重复局面判定缓存（中国象棋规则）
+    // 标记为未计算，由后续 compute_chase_state() 按需计算
+    st->chaseStateComputed = false;
+    st->chaseState = 0;
 
     // Increment ply counters. Clamp to 10 checks for each side in rule 60
     // In particular, rule60 will be reset to zero later on in case of a capture.
@@ -880,7 +1012,7 @@ void Position::do_null_move(StateInfo& newSt) {
     // Update the bloom filter
     ++filter[st->key];
 
-    std::memcpy(&newSt, st, sizeof(StateInfo));
+    std::memcpy(&newSt, st, offsetof(StateInfo, key));
 
     newSt.previous = st;
     st             = &newSt;
@@ -888,6 +1020,12 @@ void Position::do_null_move(StateInfo& newSt) {
     st->key ^= Zobrist::side;
 
     st->pliesFromNull = 0;
+    
+    // 初始化重复局面判定缓存（中国象棋规则）
+    // 标记为未计算，由后续 compute_chase_state() 按需计算
+    st->chaseStateComputed = false;
+    st->chaseState = 0;
+    st->mateThreatComputed = false;
 
     sideToMove = ~sideToMove;
 
@@ -1105,13 +1243,10 @@ uint16_t Position::chased(Color c) {
 
     uint16_t chase = 0;
 
-    // RAII 守卫：确保 sideToMove 在函数退出时（包括异常）被正确恢复
-    struct SideToMoveGuard {
-        Position& pos;
-        Color     saved;
-        ~SideToMoveGuard() { pos.sideToMove = saved; }
-    } guard{*this, sideToMove};
-
+    // 保存原始的 sideToMove，用于函数结束时恢复
+    Color originalSideToMove = sideToMove;
+    
+    // 交换 c 和 sideToMove，使 sideToMove 指向被检测方
     std::swap(c, sideToMove);
 
     // 根据规则变体决定是否允许将/兵长捉
@@ -1188,7 +1323,8 @@ uint16_t Position::chased(Color c) {
         }
     }
 
-    // sideToMove 由 RAII guard 自动恢复，无需手动处理
+    // 恢复原始的 sideToMove
+    sideToMove = originalSideToMove;
     return chase;
 }
 
@@ -1255,41 +1391,66 @@ bool Position::rule_judge(Value& result, int ply) {
             // after the root, or repeats twice before or at the root.
             if (stp->key == st->key && (++cnt == 2 || ply > i))
             {
-                // 重新统计这个循环内的将军次数
-                int cycleThemCheck = 0;
-                int cycleUsCheck = 0;
+                // === 中国象棋混合重复局面判定 ===
+                // 统计循环内各类"攻击"行为：将军、捉子、杀着威胁
+                int cycleStats[COLOR_NB][3] = {};  // [将，捉，杀]
                 
                 StateInfo* cycleSt = st;
-                for (int j = 0; j < i; j += 2) {
-                    if (cycleSt->checkersBB) cycleThemCheck++;
-                    if (cycleSt->previous->checkersBB) cycleUsCheck++;
+                for (int j = 0; j < i; j += 2)
+                {
+                    // 统计对方行为（cycleSt 对应对方走后的局面）
+                    if (cycleSt->checkersBB)
+                        cycleStats[~sideToMove][0]++;  // 将军
+                    
+                    // 捉子状态检测
+                    // 注意：cycleSt->previous 的 chaseState 是在之前的走法中计算的
+                    // 如果未计算，使用位图判断是否有捉子（非零即有）
+                    if (cycleSt->previous->chaseStateComputed)
+                    {
+                        if (cycleSt->previous->chaseState & 0x00FF)
+                            cycleStats[~sideToMove][1]++;  // 捉子
+                    }
+                    
+                    // 杀着威胁检测
+                    if (cycleSt->previous->mateThreatComputed && cycleSt->previous->mateThreat)
+                        cycleStats[~sideToMove][2]++;  // 杀着威胁
+                    
+                    // 统计己方行为（cycleSt->previous 对应己方走后的局面）
+                    if (cycleSt->previous->checkersBB)
+                        cycleStats[sideToMove][0]++;  // 将军
+                    
+                    if (cycleSt->previous->chaseStateComputed)
+                    {
+                        if (cycleSt->previous->chaseState & 0xFF00)
+                            cycleStats[sideToMove][1]++;  // 捉子
+                    }
+                    
+                    if (cycleSt->previous->mateThreatComputed && cycleSt->previous->mateThreat)
+                        cycleStats[sideToMove][2]++;  // 杀着威胁
+                    
                     cycleSt = cycleSt->previous->previous;
                 }
                 
-                // 判断"长将"：使用整数运算避免浮点开销
-                // 阈值 50% 等价于：将军次数 * 2 >= 总回合数
-                int cycleSteps = i / 2;  // 总回合数
-                bool themChecking = (cycleThemCheck * 2 >= cycleSteps);
-                bool usChecking   = (cycleUsCheck * 2 >= cycleSteps);
-                
-                if (!themChecking && !usChecking)
+                // 如果当前局面的捉子状态未计算，需要主动计算
+                // 注意：这是在搜索过程中回溯历史局面时的处理
+                if (!st->previous->chaseStateComputed)
                 {
-                    // 无将军：进入捉子检测
+                    // 创建临时 Position 进行计算
                     Position rollback;
                     memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
-
+                    
+                    // 回溯到循环开始位置并计算 chaseState
+                    // 注意：detect_chases 内部会调用 chased() 并计算捉子状态
                     result = rollback.detect_chases(i, ply);
+                    
+                    // 将计算结果同步回当前状态
+                    st->chaseStateComputed = rollback.st->chaseStateComputed;
+                    st->chaseState = rollback.st->chaseState;
                 }
                 else
                 {
-                    // === 亚洲象棋规则判定 ===
-                    // 单方长将判负，双方长将判和
-                    if (themChecking && !usChecking)
-                        result = mated_in(ply);  // 对方长将，我方胜
-                    else if (usChecking && !themChecking)
-                        result = mate_in(ply);   // 我方长将，对方胜
-                    else
-                        result = VALUE_DRAW;     // 双方长将，判和
+                    // 使用新的混合重复局面判定
+                    result = evaluate_repetition(cycleStats, ply);
                 }
 
                 // 3 folds and 2 fold draws can be judged immediately
