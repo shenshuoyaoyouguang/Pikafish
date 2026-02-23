@@ -50,14 +50,14 @@ Value Eval::evaluate(const Eval::NNUE::Networks&    networks,
     Value nnue = psqt + positional;
 
     // Blend optimism and eval with nnue complexity
-    // Aggressive style: moderate optimism amplification for stable endgame
+    // 暴力美学：极度乐观主义放大
     int nnueComplexity = std::abs(psqt - positional);
-    optimism += optimism * nnueComplexity / 380;
+    optimism += optimism * nnueComplexity / 220;
     nnue -= nnue * nnueComplexity / 15000;
 
     int material = pos.major_material();
-    // Endgame optimization: higher optimism weight to convert advantages
-    int v        = (nnue * (15500 + material) + optimism * (4900 + material)) / 20582;
+    // 暴力美学：残局极度乐观，强行转化优势
+    int v        = (nnue * (15500 + material) + optimism * (6500 + material)) / 20582;
 
     // Damp down the evaluation linearly when shuffling
     // Slower decay to preserve advantage evaluation in endgame

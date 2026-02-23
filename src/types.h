@@ -175,13 +175,13 @@ constexpr bool is_loss(Value value) {
 
 constexpr bool is_decisive(Value value) { return is_win(value) || is_loss(value); }
 
-// Aggressive style piece values: boost attacking pieces, reduce defensive pieces
-constexpr Value RookValue    = 1400;  // +95: Rook is the strongest attacker
-constexpr Value AdvisorValue = 200;   // -19: Less value on defensive advisor
-constexpr Value CannonValue  = 850;   // +77: Cannon is key for attacks
+// 暴力美学：进攻子力崇拜
+constexpr Value RookValue    = 1500;  // +195: 车神万岁
+constexpr Value AdvisorValue = 180;   // -39: 士更无用
+constexpr Value CannonValue  = 950;   // +177: 炮火连天
 constexpr Value PawnValue    = 144;
-constexpr Value KnightValue  = 780;   // +60: Knight for attack and defense
-constexpr Value BishopValue  = 170;   // -17: Less value on defensive bishop
+constexpr Value KnightValue  = 880;   // +160: 马踏飞燕
+constexpr Value BishopValue  = 150;   // -37: 象更无用
 
 // clang-format off
 enum PieceType : std::uint8_t {

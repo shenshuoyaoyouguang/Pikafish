@@ -150,9 +150,9 @@ ExtMove* MovePicker::score(MoveList<Type>& ml) {
         const Piece     capturedPiece = pos.piece_on(to);
 
         if constexpr (Type == CAPTURES)
-            // Aggressive style: boost capture values to encourage attacking moves
+            // 暴力美学：吃子就是正义
             m.value = (*captureHistory)[pc][to][type_of(capturedPiece)]
-                    + 10 * int(PieceValue[capturedPiece]);
+                    + 18 * int(PieceValue[capturedPiece]);
 
         else if constexpr (Type == QUIETS)
         {
@@ -165,17 +165,16 @@ ExtMove* MovePicker::score(MoveList<Type>& ml) {
             m.value += (*continuationHistory[3])[pc][to];
             m.value += (*continuationHistory[5])[pc][to];
 
-            // Aggressive style: bigger bonus for checks to encourage attacking play
+            // 暴力美学：能将军就绝不犹豫
             m.value +=
               (bool((pt == CANNON ? pos.check_squares(pt) & ~line_bb(from, pos.king_square(~us))
                                   : pos.check_squares(pt))
                     & to)
                && pos.see_ge(m, -75))
-              * 20000;
+              * 35000;
 
-            // Aggressive style: reduced penalty for moving to threatened squares
-            // and bonus for moving attacking pieces forward
-            int v = threatByLesser[pt] & to ? -10 : 25 * bool(threatByLesser[pt] & from);
+            // 暴力美学：无视威胁，越危险越要上
+            int v = threatByLesser[pt] & to ? 10 : 25 * bool(threatByLesser[pt] & from);
             m.value += PieceValue[pt] * v;
 
             if (ply < LOW_PLY_HISTORY_SIZE)
