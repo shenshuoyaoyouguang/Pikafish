@@ -68,9 +68,11 @@ struct StateInfo {
     Move       move;
     
     // Mate threat cache (computed lazily)
-    mutable bool    mateThreatComputed;  // 是否已计算
-    mutable Key     mateThreatKey;       // 计算时的局面 key
-    mutable bool    mateThreat;          // 杀着威胁标记
+    // 优化字段顺序：Key(8) + bool(1) + bool(1) = 10 字节，实际占用 12 字节（2 字节填充）
+    // 若按 bool+Key+bool 顺序则需要 16 字节（6 字节填充）
+    mutable Key     mateThreatKey;       // 计算时的局面 key (8 字节)
+    mutable bool    mateThreatComputed;  // 是否已计算 (1 字节)
+    mutable bool    mateThreat;          // 杀着威胁标记 (1 字节)
 };
 
 // 验证 StateInfo 结构体尺寸优化

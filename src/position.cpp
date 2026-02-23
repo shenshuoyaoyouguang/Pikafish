@@ -443,6 +443,12 @@ bool Position::gives_check(Move m) const {
 
 // Tests whether the side to move has a mate threat
 // A mate threat exists when there is at least one move that leaves the opponent with no legal moves
+//
+// 性能警告：此函数时间复杂度为 O(n×m)，n=当前合法走法数，m=对方响应走法数
+// 建议仅在以下场景调用：
+// 1. 规则判定中的重复局面检测（非搜索热路径）
+// 2. 根节点分析（频率较低）
+// 缓存机制可避免同一局面重复计算
 bool Position::has_mate_threat() const {
     // 快速路径：检查缓存
     if (st->mateThreatComputed && st->mateThreatKey == st->key)
@@ -647,8 +653,9 @@ void Position::do_move(Move                      m,
     assert(givesCheck == bool(checkers_to(us, king_square(them))));
 
     // Initialize mate threat cache (will be computed lazily when needed)
-    st->mateThreatComputed = false;
+    // 字段顺序与定义保持一致
     st->mateThreatKey      = 0;
+    st->mateThreatComputed = false;
     st->mateThreat         = false;
 
     sideToMove = ~sideToMove;
@@ -1098,7 +1105,13 @@ uint16_t Position::chased(Color c) {
 
     uint16_t chase = 0;
 
-    Color originalSide = sideToMove;  // 保存原始值用于恢复
+    // RAII 守卫：确保 sideToMove 在函数退出时（包括异常）被正确恢复
+    struct SideToMoveGuard {
+        Position& pos;
+        Color     saved;
+        ~SideToMoveGuard() { pos.sideToMove = saved; }
+    } guard{*this, sideToMove};
+
     std::swap(c, sideToMove);
 
     // 根据规则变体决定是否允许将/兵长捉
@@ -1175,8 +1188,7 @@ uint16_t Position::chased(Color c) {
         }
     }
 
-    sideToMove = originalSide;  // 恢复原始值
-
+    // sideToMove 由 RAII guard 自动恢复，无需手动处理
     return chase;
 }
 
@@ -1254,15 +1266,11 @@ bool Position::rule_judge(Value& result, int ply) {
                     cycleSt = cycleSt->previous->previous;
                 }
                 
-                // 计算将军频率：统计每方在重复循环中将军的比例
+                // 判断"长将"：使用整数运算避免浮点开销
+                // 阈值 50% 等价于：将军次数 * 2 >= 总回合数
                 int cycleSteps = i / 2;  // 总回合数
-                double themCheckRate = double(cycleThemCheck) / cycleSteps;
-                double usCheckRate   = double(cycleUsCheck) / cycleSteps;
-                
-                // 定义"长将"阈值：超过 50% 的回合在将军
-                constexpr double CHECK_THRESHOLD = 0.5;
-                bool themChecking = (themCheckRate >= CHECK_THRESHOLD);
-                bool usChecking   = (usCheckRate >= CHECK_THRESHOLD);
+                bool themChecking = (cycleThemCheck * 2 >= cycleSteps);
+                bool usChecking   = (cycleUsCheck * 2 >= cycleSteps);
                 
                 if (!themChecking && !usChecking)
                 {
