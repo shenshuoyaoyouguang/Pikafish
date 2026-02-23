@@ -465,7 +465,7 @@ bool Position::has_mate_threat() const {
         bool      givesCheck = const_cast<Position*>(this)->gives_check(m);
         DirtyPiece dp;
         DirtyThreats dts;
-        const_cast<Position*>(this)->do_move(m, tempSt, givesCheck, dp, dts);
+        const_cast<Position*>(this)->do_move(m, tempSt, givesCheck, dp, dts, nullptr, nullptr);
         
         // 检查对方是否无合法走法（被将死或困毙）
         bool hasLegalMoves = !MoveList<LEGAL>(*this).empty();
