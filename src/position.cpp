@@ -47,6 +47,9 @@ Key psq[PIECE_NB][SQUARE_NB];
 Key side, noPawns;
 }
 
+// 规则变体静态成员定义（线程安全）
+std::atomic<RuleVariant> Position::currentRule{ASIAN_RULE};
+
 namespace {
 
 constexpr std::string_view PieceToChar(" RACPNBK racpnbk");
@@ -438,6 +441,54 @@ bool Position::gives_check(Move m) const {
 }
 
 
+// Tests whether the side to move has a mate threat
+// A mate threat exists when there is at least one move that leaves the opponent with no legal moves
+bool Position::has_mate_threat() const {
+    // 快速路径：检查缓存
+    if (st->mateThreatComputed && st->mateThreatKey == st->key)
+        return st->mateThreat;
+    
+    // 如果对方已经被将军，则不是杀着威胁（而是直接将军）
+    if (checkers())
+    {
+        st->mateThreat = false;
+        st->mateThreatKey = st->key;
+        st->mateThreatComputed = true;
+        return false;
+    }
+    
+    // 遍历所有可能的下一步，在当前对象上执行和撤销
+    for (const auto& m : MoveList<LEGAL>(*this))
+    {
+        // 使用完整版本的 do_move/undo_move
+        StateInfo tempSt;
+        bool      givesCheck = const_cast<Position*>(this)->gives_check(m);
+        DirtyPiece dp;
+        DirtyThreats dts;
+        const_cast<Position*>(this)->do_move(m, tempSt, givesCheck, dp, dts);
+        
+        // 检查对方是否无合法走法（被将死或困毙）
+        bool hasLegalMoves = !MoveList<LEGAL>(*this).empty();
+        
+        const_cast<Position*>(this)->undo_move(m);
+        
+        // 如果存在一步棋让对方无子可动，则存在杀着威胁
+        if (!hasLegalMoves)
+        {
+            st->mateThreat = true;
+            st->mateThreatKey = st->key;
+            st->mateThreatComputed = true;
+            return true;
+        }
+    }
+    
+    st->mateThreat = false;
+    st->mateThreatKey = st->key;
+    st->mateThreatComputed = true;
+    return false;
+}
+
+
 // Makes a move, and saves all information necessary
 // to a StateInfo object. The move is assumed to be legal. Pseudo-legal
 // moves should be filtered out before this function is called.
@@ -594,6 +645,11 @@ void Position::do_move(Move                      m,
     // Calculate checkers bitboard (if move gives check)
     st->checkersBB = givesCheck ? checkers_to(us, king_square(them)) : Bitboard(0);
     assert(givesCheck == bool(checkers_to(us, king_square(them))));
+
+    // Initialize mate threat cache (will be computed lazily when needed)
+    st->mateThreatComputed = false;
+    st->mateThreatKey      = 0;
+    st->mateThreat         = false;
 
     sideToMove = ~sideToMove;
 
@@ -1042,10 +1098,20 @@ uint16_t Position::chased(Color c) {
 
     uint16_t chase = 0;
 
+    Color originalSide = sideToMove;  // 保存原始值用于恢复
     std::swap(c, sideToMove);
 
-    // King and pawn can legally perpetual chase
-    Bitboard attackers = pieces(sideToMove) ^ pieces(sideToMove, KING, PAWN);
+    // 根据规则变体决定是否允许将/兵长捉
+    // 亚洲规则：将和兵可以长捉
+    // 中国规则：只有将可以长捉，兵不允许
+    Bitboard excludedPieces;
+    if (get_rule() == ASIAN_RULE)
+        excludedPieces = pieces(sideToMove, KING, PAWN);
+    else
+        excludedPieces = pieces(sideToMove, KING);
+    
+    // 修复：使用 AND NOT 运算排除指定棋子
+    Bitboard attackers = pieces(sideToMove) & ~excludedPieces;
     while (attackers)
     {
         Square    from         = pop_lsb(attackers);
@@ -1109,7 +1175,7 @@ uint16_t Position::chased(Color c) {
         }
     }
 
-    std::swap(c, sideToMove);
+    sideToMove = originalSide;  // 恢复原始值
 
     return chase;
 }
@@ -1166,32 +1232,57 @@ bool Position::rule_judge(Value& result, int ply) {
 
     if (end >= 4 && filter[st->key] >= 1)
     {
-        int        cnt       = 0;
-        StateInfo* stp       = st->previous->previous;
-        bool       checkThem = st->checkersBB && stp->checkersBB;
-        bool       checkUs   = st->previous->checkersBB && stp->previous->checkersBB;
+        int        cnt = 0;
+        StateInfo* stp = st->previous->previous;
 
         for (int i = 4; i <= end; i += 2)
         {
             stp = stp->previous->previous;
-            checkThem &= bool(stp->checkersBB);
 
             // Return a score if a position repeats once earlier but strictly
             // after the root, or repeats twice before or at the root.
             if (stp->key == st->key && (++cnt == 2 || ply > i))
             {
-                if (!checkThem && !checkUs)
+                // 重新统计这个循环内的将军次数
+                int cycleThemCheck = 0;
+                int cycleUsCheck = 0;
+                
+                StateInfo* cycleSt = st;
+                for (int j = 0; j < i; j += 2) {
+                    if (cycleSt->checkersBB) cycleThemCheck++;
+                    if (cycleSt->previous->checkersBB) cycleUsCheck++;
+                    cycleSt = cycleSt->previous->previous;
+                }
+                
+                // 计算将军频率：统计每方在重复循环中将军的比例
+                int cycleSteps = i / 2;  // 总回合数
+                double themCheckRate = double(cycleThemCheck) / cycleSteps;
+                double usCheckRate   = double(cycleUsCheck) / cycleSteps;
+                
+                // 定义"长将"阈值：超过 50% 的回合在将军
+                constexpr double CHECK_THRESHOLD = 0.5;
+                bool themChecking = (themCheckRate >= CHECK_THRESHOLD);
+                bool usChecking   = (usCheckRate >= CHECK_THRESHOLD);
+                
+                if (!themChecking && !usChecking)
                 {
-                    // Copy the current position to a rollback struct, so we don't need to do those moves again
+                    // 无将军：进入捉子检测
                     Position rollback;
                     memcpy((void*) &rollback, (const void*) this, offsetof(Position, filter));
 
-                    // Chasing detection
                     result = rollback.detect_chases(i, ply);
                 }
                 else
-                    // Checking detection
-                    result = !checkUs ? mate_in(ply) : !checkThem ? mated_in(ply) : VALUE_DRAW;
+                {
+                    // === 亚洲象棋规则判定 ===
+                    // 单方长将判负，双方长将判和
+                    if (themChecking && !usChecking)
+                        result = mated_in(ply);  // 对方长将，我方胜
+                    else if (usChecking && !themChecking)
+                        result = mate_in(ply);   // 我方长将，对方胜
+                    else
+                        result = VALUE_DRAW;     // 双方长将，判和
+                }
 
                 // 3 folds and 2 fold draws can be judged immediately
                 if (result == VALUE_DRAW || cnt == 2)
@@ -1215,9 +1306,6 @@ bool Position::rule_judge(Value& result, int ply) {
                     break;
                 }
             }
-
-            if (i + 1 <= end)
-                checkUs &= bool(stp->previous->checkersBB);
         }
     }
 

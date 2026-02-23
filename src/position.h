@@ -20,6 +20,7 @@
 #define POSITION_H_INCLUDED
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -65,7 +66,15 @@ struct StateInfo {
     bool       needFullCheck;
     Piece      capturedPiece;
     Move       move;
+    
+    // Mate threat cache (computed lazily)
+    mutable bool    mateThreatComputed;  // 是否已计算
+    mutable Key     mateThreatKey;       // 计算时的局面 key
+    mutable bool    mateThreat;          // 杀着威胁标记
 };
+
+// 验证 StateInfo 结构体尺寸优化
+static_assert(sizeof(StateInfo) <= 320, "StateInfo structure too large");
 
 
 // A list to keep track of the position states along the setup moves (from the
@@ -81,6 +90,11 @@ using StateListPtr = std::unique_ptr<std::deque<StateInfo>>;
 class Position {
    public:
     static void init();
+    
+    // 规则变体配置（线程安全）
+    static std::atomic<RuleVariant> currentRule;
+    static void                     set_rule(RuleVariant r) { currentRule.store(r, std::memory_order_relaxed); }
+    static RuleVariant              get_rule() { return currentRule.load(std::memory_order_relaxed); }
 
     Position()                           = default;
     Position(const Position&)            = delete;
@@ -113,6 +127,7 @@ class Position {
     Bitboard blockers_for_king(Color c) const;
     Bitboard check_squares(PieceType pt) const;
     Bitboard pinners(Color c) const;
+    bool     has_mate_threat() const;  // 检测是否存在杀着威胁
 
     // Attacks to/from a given square
     Bitboard attackers_to(Square s) const;

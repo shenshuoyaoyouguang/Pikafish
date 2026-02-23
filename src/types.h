@@ -133,6 +133,13 @@ enum Color : uint8_t {
     COLOR_NB = 2
 };
 
+// 象棋规则变体
+enum RuleVariant : uint8_t {
+    ASIAN_RULE,     // 亚洲象棋规则（将兵可长捉）
+    CHINESE_RULE,   // 中国象棋规则（严格禁止长捉）
+    RULE_NB
+};
+
 enum Bound : uint8_t {
     BOUND_NONE,
     BOUND_UPPER,

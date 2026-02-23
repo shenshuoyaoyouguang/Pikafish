@@ -202,16 +202,18 @@ Move* generate<EVASIONS>(const Position& pos, Move* moveList) {
         {
             Square hurdleSq = pop_lsb(hurdle);
             pt              = type_of(pos.piece_on(hurdleSq));
+            Bitboard evasionBb;
+            
             if (pt == PAWN)
-                b = attacks_bb<PAWN>(hurdleSq, us) & ~line_bb(checksq, hurdleSq) & ~pos.pieces(us);
+                evasionBb = attacks_bb<PAWN>(hurdleSq, us) & ~pos.pieces(us);
             else if (pt == CANNON)
-                b = (attacks_bb<ROOK>(hurdleSq, pos.pieces()) & ~line_bb(checksq, hurdleSq)
-                     & ~pos.pieces())
-                  | (attacks_bb<CANNON>(hurdleSq, pos.pieces()) & pos.pieces(~us));
+                evasionBb = (attacks_bb<ROOK>(hurdleSq, pos.pieces()) & ~pos.pieces())
+                          | (attacks_bb<CANNON>(hurdleSq, pos.pieces()) & pos.pieces(~us));
             else
-                b = attacks_bb(pt, hurdleSq, pos.pieces()) & ~line_bb(checksq, hurdleSq)
-                  & ~pos.pieces(us);
-            moveList = splat_moves(moveList, hurdleSq, b);
+                evasionBb = attacks_bb(pt, hurdleSq, pos.pieces()) & ~pos.pieces(us);
+            
+            // 注：合法应将过滤由 generate<LEGAL> 中的 legal() 检查完成
+            moveList = splat_moves(moveList, hurdleSq, evasionBb);
         }
     }
 
