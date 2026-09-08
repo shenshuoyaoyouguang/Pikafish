@@ -185,6 +185,11 @@ class Position {
     Value    major_material(Color c) const;
     Value    major_material() const;
 
+    // Aggressive move detection helpers (algorithm enhancement, no value changes)
+    bool is_past_river(Square s, Color c) const;
+    bool is_aggressive_move(Move m) const;
+    bool is_aggressive_move(Move m, bool preCapture, bool preGivesCheck) const;
+
     // Position consistency check, for debugging
     bool pos_is_ok() const;
     void flip();
@@ -326,6 +331,34 @@ inline Value Position::major_material(Color c) const { return st->majorMaterial[
 
 inline Value Position::major_material() const {
     return major_material(WHITE) + major_material(BLACK);
+}
+
+inline bool Position::is_past_river(Square s, Color c) const {
+    // 河界在 RANK_4 和 RANK_5 之间。白方从底部(RANK_5-9)前进，过河到 RANK_0-4；
+    // 黑方从顶部(RANK_0-4)前进，过河到 RANK_5-9。
+    return c == WHITE ? rank_of(s) <= RANK_4 : rank_of(s) >= RANK_5;
+}
+
+inline bool Position::is_aggressive_move(Move m) const {
+    // 进攻性着法 = 吃子 || 将军 || 过河兵推进
+    if (capture(m))
+        return true;
+    if (gives_check(m))
+        return true;
+    Piece pc = moved_piece(m);
+    if (type_of(pc) == PAWN && is_past_river(m.to_sq(), color_of(pc)))
+        return true;
+    return false;
+}
+
+inline bool Position::is_aggressive_move(Move m, bool preCapture, bool preGivesCheck) const {
+    // 重载：接受预计算的 capture/givesCheck，避免重复计算
+    if (preCapture || preGivesCheck)
+        return true;
+    Piece pc = moved_piece(m);
+    if (type_of(pc) == PAWN && is_past_river(m.to_sq(), color_of(pc)))
+        return true;
+    return false;
 }
 
 inline int Position::game_ply() const { return gamePly; }

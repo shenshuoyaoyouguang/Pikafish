@@ -173,8 +173,17 @@ ExtMove* MovePicker::score(MoveList<Type>& ml) {
                && pos.see_ge(m, -75))
               * 35000;
 
-            // 暴力美学：无视威胁，越危险越要上
-            int v = threatByLesser[pt] & to ? 10 : 25 * bool(threatByLesser[pt] & from);
+            // 方案4：安全将军（see >= 0，不丢子）= 逼近杀棋路径，给标记位优先返回
+            bool isCheckMove = bool(((pt == CANNON
+                            ? pos.check_squares(pt) & ~Attacks::line_bb(from, pos.king_square(~us))
+                            : pos.check_squares(pt))
+                         & to));
+            if (isCheckMove && pos.see_ge(m, 0))
+                m.value += (1 << 30);  // 标记位，与排序权重不冲突
+
+            // 反威胁检测：有战术后续（进攻性着法）才无视威胁，避免盲目送子
+            bool hasCounterThreat = pos.is_aggressive_move(m);
+            int v = ((threatByLesser[pt] & to) && !hasCounterThreat) ? 10 : 25 * bool(threatByLesser[pt] & from);
             m.value += PieceValue[pt] * v;
 
             if (ply < LOW_PLY_HISTORY_SIZE)

@@ -473,8 +473,16 @@ void Search::Worker::iterative_deepening() {
 
             auto elapsedTime = elapsed();
 
-            // Stop the search if we have exceeded the totalTime or maximum
-            if (elapsedTime > std::min(totalTime, double(mainThread->tm.maximum())))
+            // 方案6：进攻性最佳着法多搜一轮——bestMove 是进攻性着法时放宽时间
+            bool bestMoveAggressive = rootMoves[0].pv[0].is_ok()
+                                   && rootPos.is_aggressive_move(rootMoves[0].pv[0]);
+            if (bestMoveAggressive && elapsedTime < mainThread->tm.optimum() * 3 / 2)
+                continue;  // 继续下一迭代
+
+            // Stop the search if we have exceeded totalTime or maximum time,
+            // or if we know that there are no better moves in the analysed line(s).
+            if (elapsedTime > std::min(totalTime, double(mainThread->tm.maximum()))
+                || rootMoves[multiPV - 1].score >= mate_in(3) || rootMoves[0].score == mated_in(2))
             {
                 // If we are allowed to ponder do not stop the search now but
                 // keep pondering until the GUI sends "ponderhit" or "stop".
@@ -572,6 +580,7 @@ Value Search::Worker::search(
     constexpr bool PvNode   = nodeType != NonPV;
     constexpr bool rootNode = nodeType == Root;
     const bool     allNode  = !(PvNode || cutNode);
+    const bool     seekMate = rootDepth >= 16 && std::abs(rootMoves[pvIdx].score) >= 2000;
 
     // Dive into quiescence search when the depth reaches zero
     if (depth <= 0)
@@ -939,6 +948,10 @@ moves_loop:  // When in check, search starts here
         movedPiece = pos.moved_piece(move);
         givesCheck = pos.gives_check(move);
 
+        // 方案2：进攻性着法扩展——将军或过河兵推进，额外搜索一层
+        if (!rootNode && depth >= 6 && !capture && pos.is_aggressive_move(move, capture, givesCheck))
+            extension = 1;
+
         // Calculate new depth for this move
         newDepth = depth - 1;
 
@@ -1029,9 +1042,12 @@ moves_loop:  // When in check, search starts here
 
         // (*Scaler) Generally, higher singularBeta (i.e closer to ttValue)
         // and lower extension margins scale well.
-        if (!rootNode && move == ttData.move && !excludedMove && depth >= 5 + ss->ttPv
-            && is_valid(ttData.value) && !is_decisive(ttData.value) && (ttData.bound & BOUND_LOWER)
-            && ttData.depth >= depth - 3 && !is_shuffling(move, ss, pos))
+        // 方案5：进攻性 ttMove 放宽 singular extension 深度门槛（5→4）
+        bool ttIsAggressive = pos.capture(ttData.move) || pos.gives_check(ttData.move);
+        if (!rootNode && move == ttData.move && !excludedMove
+            && depth >= (ttIsAggressive ? 4 : 5) + ss->ttPv && is_valid(ttData.value)
+            && !is_decisive(ttData.value) && (ttData.bound & BOUND_LOWER) && ttData.depth >= depth - 3
+            && !is_shuffling(move, ss, pos) && !seekMate)
         {
             Value singularBeta  = ttData.value - (44 + 72 * (ss->ttPv && !PvNode)) * depth / 69;
             Depth singularDepth = newDepth / 2;
@@ -1130,7 +1146,11 @@ moves_loop:  // When in check, search starts here
         if (allNode)
             r += r * 256 / (256 * depth + 256);
 
-        // Step 16. Late moves reduction / extension (LMR)
+        // 方案3：进攻性着法少减深度——减少 25% 的 LMR reduction
+        if (r > 0 && pos.is_aggressive_move(move, capture, givesCheck))
+            r -= r / 4;
+
+        // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
         {
             // In general we want to cap the LMR depth search at newDepth, but when

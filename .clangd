@@ -1,0 +1,13 @@
+CompileFlags:
+  Remove:
+    - -std=*
+  Add:
+    - -std=c++17
+    - -Isrc
+    - -Isrc/nnue
+    - -Isrc/nnue/features
+    - -Isrc/nnue/layers
+    - -Isrc/external
+    - -Isrc/external/common
+    - -Isrc/external/decompress
+    - -Isrc/universal
