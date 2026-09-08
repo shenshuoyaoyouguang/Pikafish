@@ -477,7 +477,12 @@ void Search::Worker::iterative_deepening() {
             bool bestMoveAggressive = rootMoves[0].pv[0].is_ok()
                                    && rootPos.is_aggressive_move(rootMoves[0].pv[0]);
             if (bestMoveAggressive && elapsedTime < mainThread->tm.optimum() * 3 / 2)
+            {
+                // continue 跳过循环末尾，必须先更新 iterValue 和 iterIdx
+                mainThread->iterValue[iterIdx] = bestValue;
+                iterIdx                        = (iterIdx + 1) & 3;
                 continue;  // 继续下一迭代
+            }
 
             // Stop the search if we have exceeded totalTime or maximum time,
             // or if we know that there are no better moves in the analysed line(s).
