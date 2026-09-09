@@ -175,7 +175,7 @@ ExtMove* MovePicker::score(MoveList<Type>& ml) {
 
             // 方案4：安全将军（see >= 0，不丢子）= 逼近杀棋路径，给标记位优先返回
             bool isCheckMove = bool(((pt == CANNON
-                            ? pos.check_squares(pt) & ~Attacks::line_bb(from, pos.king_square(~us))
+                            ? pos.check_squares(pt) & ~line_bb(from, pos.king_square(~us))
                             : pos.check_squares(pt))
                          & to));
             if (isCheckMove && pos.see_ge(m, 0))
