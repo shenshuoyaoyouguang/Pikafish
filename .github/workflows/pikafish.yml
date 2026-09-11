@@ -156,6 +156,11 @@ jobs:
           cd Wiki
           rm -rf .git
 
+      - name: Set up LLVM for bench
+        run: |
+          curl -s https://apt.llvm.org/llvm.sh | sudo bash -s -- 22
+          sudo apt install -y libc++-22-dev libc++abi-22-dev
+
       - name: Bench signature check (2 runs, x86-64-avx2)
         run: |
           chmod +x Linux/pikafish-avx2
