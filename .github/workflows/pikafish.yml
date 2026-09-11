@@ -4,15 +4,17 @@ on:
   push:
     branches:
       - master
+  # 允许在非 master 分支手动触发构建矩阵
+  workflow_dispatch:
 
 jobs:
   Pikafish-x86-64:
-    name: ${{ matrix.config.name }}-x86-64-universal
+    name: ${{ matrix.config.name }}${{ matrix.arch }}
     runs-on: ${{ matrix.config.os }}
     env:
-      ARCH: x86-64-universal
+      ARCH: x86-64${{ matrix.arch }}
       COMP: clang
-      EXE: Pikafish-${{ matrix.config.name }}-x86-64-universal${{ matrix.config.ext }}
+      EXE: pikafish${{ matrix.arch }}${{ matrix.config.ext }}
     strategy:
       matrix:
         config:
@@ -23,6 +25,7 @@ jobs:
             os: windows-latest
             shell: msys2 {0}
             ext: .exe
+        arch: ["-avx512icl", "-vnni512", "-avx512", "-avxvnni", "-bmi2", "-avx2", "-sse41-popcnt"]
     defaults:
       run:
         working-directory: src
@@ -48,25 +51,24 @@ jobs:
           echo "EXTRALDFLAGS=-stdlib=libc++" >> $GITHUB_ENV
           echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> $GITHUB_PATH
 
-      - name: Compile universal build
+      - name: Compile ${{ matrix.arch }} build
         run: |
           make -j4 build EXE=$EXE
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
-        with:	
-          name: ${{ env.EXE }}
+        with:
+          name: Pikafish-${{ matrix.config.name }}${{ matrix.arch }}
           path: ${{ env.EXE }}
 
   Pikafish-MacOS:
-    name: MacOS-universal
+    name: MacOS-apple-silicon
     runs-on: macos-latest
     env:
+      ARCH: apple-silicon
       COMP: clang
-      EXE: Pikafish-MacOS-universal
+      EXE: pikafish-apple-silicon
     defaults:
       run:
         working-directory: src
@@ -75,27 +77,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Compile universal build
+      - name: Compile apple-silicon build
         run: |
-          make -j3 macos-lipo EXE=$EXE
+          make -j4 build EXE=$EXE
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ env.EXE }}
+          name: Pikafish-MacOS-apple-silicon
           path: ${{ env.EXE }}
 
   Pikafish-Android:
-    name: Android-arm64-universal
+    name: Android-${{ matrix.arch }}
     runs-on: ubuntu-latest
     env:
-      ARCH: arm64-universal
+      ARCH: ${{ matrix.arch }}
       COMP: ndk
-      EXE: Pikafish-Android-arm64-universal
+      EXE: pikafish-${{ matrix.arch }}
       LDFLAGS: "-static -Wno-unused-command-line-argument"
+    strategy:
+      matrix:
+        arch: ["armv8-dotprod", "armv8"]
     defaults:
       run:
         working-directory: src
@@ -114,18 +117,16 @@ jobs:
           ANDROID_NDK_BIN=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin
           echo "ANDROID_NDK_BIN=$ANDROID_NDK_BIN" >> $GITHUB_ENV
 
-      - name: Compile universal build
+      - name: Compile ${{ matrix.arch }} build
         run: |
           export PATH=${{ env.ANDROID_NDK_BIN }}:$PATH
           make -j4 build EXE=$EXE
           make strip EXE=$EXE
           cp $EXE ../
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
       - uses: actions/upload-artifact@v7
-        with:	
-          name: ${{ env.EXE }}
+        with:
+          name: Pikafish-Android-${{ matrix.arch }}
           path: ${{ env.EXE }}
 
   Pikafish:
@@ -137,12 +138,17 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: actions/download-artifact@v8
-        with:
-          pattern: Pikafish-*
-          path: Artifacts
 
-      - name: Put binaries into release root
-        run: cp Artifacts/Pikafish-*/* .
+      - name: Put binaries into OS-specific directories
+        run: |
+          mkdir Windows
+          mv Pikafish-Windows*/* Windows
+          mkdir Linux
+          mv Pikafish-Linux*/* Linux
+          mkdir MacOS
+          mv Pikafish-MacOS*/* MacOS
+          mkdir Android
+          mv Pikafish-Android*/* Android
 
       - name: Download wiki
         run: |
@@ -150,13 +156,32 @@ jobs:
           cd Wiki
           rm -rf .git
 
-      # Artifacts automatically get zipped.
-      # To avoid double-zipping, we use the unzipped directory
+      - name: Bench signature check (2 runs, x86-64-avx2)
+        run: |
+          chmod +x Linux/pikafish-avx2
+          make -C src net
+          mkdir -p "$RUNNER_TEMP/bench"
+          cp Linux/pikafish-avx2 src/pikafish.nnue "$RUNNER_TEMP/bench/"
+          sig() { ( cd "$RUNNER_TEMP/bench" && ./pikafish-avx2 bench >out.txt 2>err.txt
+                    awk '/Nodes searched/{print $4}' err.txt out.txt ); }
+          s1=$(sig)
+          s2=$(sig)
+          echo "run1=$s1 run2=$s2"
+          if [ -z "$s1" ] || [ "$s1" != "$s2" ]; then
+            echo "--- bench stderr ---"
+            cat "$RUNNER_TEMP/bench/err.txt"
+            echo "::error::bench signature not reproducible: '$s1' vs '$s2'"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v7
         with:
           name: Pikafish
           path: |
-            Pikafish-*
+            Windows
+            Linux
+            MacOS
+            Android
             Wiki
             AUTHORS
             CONTRIBUTING.md
