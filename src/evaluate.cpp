@@ -37,7 +37,7 @@
 
 namespace Stockfish {
 
-// Evaluate is the evaluator for the outer world. It returns a static evaluation
+// Evaluate is the evaluator for the outer world. It returns a static evaluation MARKER
 // of the position from the point of view of the side to move.
 Value Eval::evaluate(const Eval::NNUE::Network&     network,
                      const Position&                pos,
