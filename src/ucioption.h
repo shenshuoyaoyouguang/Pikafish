@@ -30,7 +30,7 @@
 namespace Stockfish {
 // Define a custom comparator, because the UCI options should be case-insensitive
 struct CaseInsensitiveLess {
-       bool operator()(const std::string&, const std::string&) const;
+    bool operator()(const std::string&, const std::string&) const;
 };
 
 class OptionsMap;
