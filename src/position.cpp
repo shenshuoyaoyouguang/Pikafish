@@ -246,7 +246,12 @@ std::optional<PositionSetError> Position::set(const string& fenStr, StateInfo* s
     // 3-4. Halfmove clock and fullmove number
     ss >> std::skipws >> st->rule60 >> gamePly;
 
-    if (st->rule60 < 0 || st->rule60 > 119)
+    // Counts above 120 are pointless in an actual game, because rule 60 draws
+    // the position at 120, but they still have to round-trip: fen() prints
+    // st->rule60 verbatim, so rejecting a value the engine can itself produce
+    // leaves set() unable to read back fen()'s own output. Limit at 2**15, as
+    // rule60 is used multiplicatively with the evaluation during search.
+    if (st->rule60 < 0 || st->rule60 > 32767)
         return PositionSetError("Unsupported position. Rule60 counter out of range.");
 
     if (gamePly < 0 || gamePly > 100000)
