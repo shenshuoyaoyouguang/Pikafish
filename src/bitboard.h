@@ -116,8 +116,8 @@ inline constexpr Bitboard shift(Bitboard b, Direction dir) {
          : dir == SOUTH + SOUTH ? b >> u8(NORTH + NORTH)
          : dir == EAST          ? (b & ~FileIBB) << u8(EAST)
          : dir == WEST          ? (b & ~FileABB) >> u8(EAST)
-         : dir == NORTH_EAST    ? (b & ~FileIBB) << u8(NORTH_EAST)
-         : dir == NORTH_WEST    ? (b & ~FileABB) << u8(NORTH_WEST)
+         : dir == NORTH_EAST    ? (b & ~FileIBB & ~Rank9BB) << u8(NORTH_EAST)
+         : dir == NORTH_WEST    ? (b & ~FileABB & ~Rank9BB) << u8(NORTH_WEST)
          : dir == SOUTH_EAST    ? (b & ~FileIBB) >> u8(NORTH_WEST)
          : dir == SOUTH_WEST    ? (b & ~FileABB) >> u8(NORTH_EAST)
                                 : Bitboard(0);
