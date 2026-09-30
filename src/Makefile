@@ -1209,7 +1209,8 @@ net:
 	@$(SHELL) ../scripts/net.sh
 
 format:
-	$(CLANG-FORMAT) -i $(filter %.cpp,$(SRCS)) $(HEADERS) -style=file
+	$(CLANG-FORMAT) -i $(filter-out external/%,$(filter %.cpp,$(SRCS))) \
+		$(filter-out external/%,$(HEADERS)) -style=file
 
 ### ==========================================================================
 ### Section 5. Private Targets
