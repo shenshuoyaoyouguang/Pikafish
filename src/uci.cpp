@@ -172,6 +172,19 @@ void UCIEngine::loop() {
 
             engine.save_network(file);
         }
+        else if (token == "export_theta")
+        {
+            // 输出当前 LMR θ 向量（逗号分隔的 Q16 定点值）
+            auto theta = engine.get_lmr_theta();
+            sync_cout << "lmr_theta ";
+            for (usize i = 0; i < theta.size(); ++i)
+            {
+                if (i > 0)
+                    std::cout << ",";
+                std::cout << theta[i];
+            }
+            std::cout << sync_endl;
+        }
         else if (token == "--help" || token == "help" || token == "--license" || token == "license")
             sync_cout
               << "\nPikafish is a powerful xiangqi engine for playing and analyzing."

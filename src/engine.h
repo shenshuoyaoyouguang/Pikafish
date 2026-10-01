@@ -116,6 +116,9 @@ class Engine {
     std::string                          thread_allocation_information_as_string() const;
     std::string                          thread_binding_information_as_string() const;
 
+    // LMR 连续化：获取主线程 worker 的 θ 向量（Q16 定点）
+    std::array<int, Search::Worker::LMR_THETA_SIZE> get_lmr_theta() const;
+
    private:
     const std::filesystem::path binaryDirectory;
 

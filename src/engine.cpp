@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdlib>
 #include <filesystem>
 #include <deque>
 #include <iostream>
@@ -107,6 +108,107 @@ Engine::Engine(std::optional<std::filesystem::path> path) :
     options.add("nodestime", Option(0, 0, 10000));
 
     options.add("UCI_ShowWDL", Option(false));
+
+    // LMR 连续化调优选项
+    options.add("LMR_Continuous", Option(false));
+
+    // LMR 采样开关：开启后在 legacy 路径 Step 18 末尾向 stderr 输出 (φ(x), r) 样本
+    options.add("LMR_Sample", Option(false));
+
+    // θ₀ 默认值（Q16 定点逗号分隔串），与 init_lmr_theta() 一致
+    // 26 维：合并原 4+5 → 新 4 (-1434*Q=-93978624)，新增 5/21/23/24/25 交互项初始为 0
+    constexpr const char* LmrThetaDefault =
+      "65536,73924608,21120,182779904,-93978624,0,-62849024,"
+      "-73007104,-74448896,-60293120,65536,211419136,67895296,101777408,"
+      "16973824,66781184,66453504,177668096,7648,196608,64225280,0,16646144,0,0,0";
+
+    options.add(  //
+      "LMR_Theta", Option(LmrThetaDefault, [this](const Option& o) -> std::optional<std::string> {
+          // 解析逗号分隔的 Q16 定点参数串（不使用异常，-fno-exceptions）
+          std::string      s = std::string(o);
+          std::stringstream ss(s);
+          std::string       token;
+          std::array<int, Search::Worker::LMR_THETA_SIZE> newTheta{};
+          int  count = 0;
+          bool ok    = true;
+          while (std::getline(ss, token, ','))
+          {
+              if (count >= Search::Worker::LMR_THETA_SIZE)
+              {
+                  ok = false;
+                  break;
+              }
+              // 用 strtol 解析，检测非法字符
+              char* end = nullptr;
+              long  val = std::strtol(token.c_str(), &end, 10);
+              if (end == token.c_str() || *end != '\0')
+              {
+                  ok = false;
+                  break;
+              }
+              newTheta[count++] = int(val);
+          }
+          if (!ok || count != Search::Worker::LMR_THETA_SIZE)
+              return std::optional<std::string>(
+                "LMR_Theta: expected "
+                + std::to_string(Search::Worker::LMR_THETA_SIZE)
+                + " comma-separated integers");
+          // 更新所有 worker 的 lmrTheta
+          for (auto&& t : threads)
+              t->worker->lmrTheta = newTheta;
+          return std::nullopt;
+      }));
+
+    // 联合搜索优化选项：Joint_Continuous 开关
+    // jointContinuous=false 时使用 legacy 硬编码常数，true 时使用 jointTheta 参数化
+    options.add("Joint_Continuous", Option(false));
+
+    // Joint_Theta 默认值 = [lmrTheta默认值(26维), nm_legacy(6维), fut_legacy(5维), se_legacy(4维)]
+    // 前 26 维与 LmrThetaDefault 一致（Q16 定点），后 15 维为 legacy 整数值
+    constexpr const char* JointThetaDefault =
+      "65536,73924608,21120,182779904,-93978624,0,-62849024,"
+      "-73007104,-74448896,-60293120,65536,211419136,67895296,101777408,"
+      "16973824,66781184,66453504,177668096,7648,196608,64225280,0,16646144,0,0,0,"
+      "8,51,8,282,3,188,"
+      "41,33,2500,333,133448,"
+      "45,72,69,176";
+
+    options.add(  //
+      "Joint_Theta", Option(JointThetaDefault, [this](const Option& o) -> std::optional<std::string> {
+          // 解析逗号分隔的参数串（前 26 维 Q16 定点，后 15 维整数）
+          std::string      s = std::string(o);
+          std::stringstream ss(s);
+          std::string       token;
+          std::array<int, Search::Worker::JOINT_THETA_SIZE> newTheta{};
+          int  count = 0;
+          bool ok    = true;
+          while (std::getline(ss, token, ','))
+          {
+              if (count >= Search::Worker::JOINT_THETA_SIZE)
+              {
+                  ok = false;
+                  break;
+              }
+              // 用 strtol 解析，检测非法字符
+              char* end = nullptr;
+              long  val = std::strtol(token.c_str(), &end, 10);
+              if (end == token.c_str() || *end != '\0')
+              {
+                  ok = false;
+                  break;
+              }
+              newTheta[count++] = int(val);
+          }
+          if (!ok || count != Search::Worker::JOINT_THETA_SIZE)
+              return std::optional<std::string>(
+                "Joint_Theta: expected "
+                + std::to_string(Search::Worker::JOINT_THETA_SIZE)
+                + " comma-separated integers");
+          // 更新所有 worker 的 jointTheta
+          for (auto&& t : threads)
+              t->worker->jointTheta = newTheta;
+          return std::nullopt;
+      }));
 
     options.add(  //
       "EvalFile", Option(EvalFileDefaultName, [this](const Option& o) {
@@ -232,6 +334,10 @@ void Engine::set_tt_size(usize mb) {
 }
 
 void Engine::set_ponderhit(bool b) { threads.main_manager()->ponder = b; }
+
+std::array<int, Search::Worker::LMR_THETA_SIZE> Engine::get_lmr_theta() const {
+    return threads.main_thread()->worker->lmrTheta;
+}
 
 // network related
 

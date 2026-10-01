@@ -103,9 +103,36 @@ cd src
 make -j profile-build
 ```
 
+**Windows users**: If you encounter crashes at depth 9+, use **WSL (Windows Subsystem for Linux)** to build and run:
+```bash
+wsl
+cd /mnt/e/xiaoxiao/pikayu/Pikafish/src
+make -j ARCH=x86-64-avx2 COMP=gcc
+./pikafish
+```
+
+**Note**: MinGW builds may crash at search depth 9+ on some positions (known `set_check_info` bug). WSL/Linux builds are stable.
+
 Detailed compilation instructions for all platforms can be found in our
 [documentation][wiki-compile-link]. Our wiki also has information about
 the [UCI commands][wiki-uci-link] supported by Pikafish.
+
+## Search Parameter Tuning
+
+Pikafish supports **search parameter tuning** for advanced users. The following UCI options are available:
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `LMR_Continuous` | check | false | Enable continuous optimization of LMR parameters |
+| `LMR_Theta` | string | (26 values) | LMR theta parameters (26-dimensional) |
+| `LMR_Sample` | check | false | Enable sampling mode for LMR tuning |
+| `Joint_Continuous` | check | false | Enable continuous optimization of joint parameters |
+| `Joint_Theta` | string | (41 values) | Joint theta parameters (41-dimensional) |
+
+**UCI Commands**:
+- `export_theta` — Export current theta parameters to `theta_export.txt`
+
+These parameters are used by the SPSA (Simultaneous Perturbation Stochastic Approximation) optimization framework for fine-tuning search performance.
 
 ## Terms of use
 

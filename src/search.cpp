@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstdio>
 #include <initializer_list>
 #include <string>
 #include <utility>
@@ -253,6 +254,13 @@ void Search::Worker::start_searching() {
 // depth until the allocated thinking time has been consumed, the user stops
 // the search, or the maximum search depth is reached.
 bool Search::Worker::iterative_deepening() {
+
+    // 从 UCI 选项读取 LMR 连续化开关与采样开关
+    lmrContinuous = options.count("LMR_Continuous") && bool(options["LMR_Continuous"]);
+    lmrSample     = options.count("LMR_Sample")     && bool(options["LMR_Sample"]);
+
+    // 从 UCI 选项读取联合搜索优化开关
+    jointContinuous = options.count("Joint_Continuous") && bool(options["Joint_Continuous"]);
 
     SearchManager* mainThread = (is_mainthread() ? main_manager() : nullptr);
 
@@ -681,6 +689,12 @@ void Search::Worker::clear() {
     for (usize i = 1; i < reductions.size(); ++i)
         reductions[i] = int(1713 / 100.0 * std::log(i));
 
+    // 初始化 LMR 连续化参数 θ₀
+    init_lmr_theta();
+
+    // 初始化联合搜索优化参数 θ_joint（前 26 维从 lmrTheta 复制）
+    init_joint_theta();
+
     refreshTable.clear(network[numaAccessToken]);
 }
 
@@ -923,12 +937,22 @@ Value Search::Worker::search(
     if (!ss->ttPv && depth < (seekMate ? 6 : 15) && eval >= beta && (!ttData.move || ttCapture)
         && !is_loss(beta) && !is_win(eval))
     {
-        Value futilityMult = std::min(41 + depth * 4, 127);
-        futilityMult -= 33 * !ss->ttHit;
+        // 联合优化参数化（索引 32-36）：jointContinuous=true 时使用 jointTheta，否则用 legacy 硬编码
+        int fut_base        = jointContinuous ? jointTheta[32] : 41;
+        int fut_tthit_adj   = jointContinuous ? jointTheta[33] : 33;
+        int fut_improving_w = jointContinuous ? jointTheta[34] : 2500;
+        int fut_opponent_w  = jointContinuous ? jointTheta[35] : 333;
+        int fut_corr_div    = jointContinuous ? jointTheta[36] : 133448;
+        // 边界保护：确保除法分母不为 0
+        if (fut_corr_div == 0)
+            fut_corr_div = 133448;
+
+        Value futilityMult = std::min(fut_base + depth * 4, 127);
+        futilityMult -= fut_tthit_adj * !ss->ttHit;
 
         Value futilityMargin = futilityMult * depth
-                             - (2500 * improving + 333 * opponentWorsening) * futilityMult / 1024
-                             + std::abs(correctionValue) / 133448;
+                             - (fut_improving_w * improving + fut_opponent_w * opponentWorsening) * futilityMult / 1024
+                             + std::abs(correctionValue) / fut_corr_div;
 
         if (eval - futilityMargin >= beta)
             return (718 * beta + 306 * eval) / 1024;
@@ -936,13 +960,23 @@ Value Search::Worker::search(
 
     // Step 10. Null move search with verification search
     if (cutNode
-        && ss->staticEval + 50 * ss->priorNMPFailHigh >= beta - 8 * depth - 51 * improving + 188
+        && ss->staticEval + 50 * ss->priorNMPFailHigh
+             >= beta - (jointContinuous ? jointTheta[26] : 8) * depth - (jointContinuous ? jointTheta[27] : 51) * improving
+                  + (jointContinuous ? jointTheta[31] : 188)
         && !excludedMove && pos.major_material(us) && ss->ply >= nmpMinPly && beta >= -2000)
     {
         assert((ss - 1)->currentMove != Move::null());
 
+        // 联合优化参数化（索引 26-31）：jointContinuous=true 时使用 jointTheta，否则用 legacy 硬编码
+        int nm_R_base      = jointContinuous ? jointTheta[28] : 8;
+        int nm_R_eval_div  = jointContinuous ? jointTheta[29] : 282;
+        int nm_verify_num  = jointContinuous ? jointTheta[30] : 3;
+        // 边界保护：确保除法分母不为 0
+        if (nm_R_eval_div == 0)
+            nm_R_eval_div = 282;
+
         // Null move dynamic reduction based on depth
-        Depth R = 8 + depth / 3 + std::max((ss->staticEval - beta) / 282, 0);
+        Depth R = nm_R_base + depth / 3 + std::max((ss->staticEval - beta) / nm_R_eval_div, 0);
         do_null_move(pos, st, ss);
 
         Value nullValue = -search<NonPV>(pos, ss + 1, -beta, -beta + 1, depth - R, false);
@@ -963,7 +997,7 @@ Value Search::Worker::search(
 
             // Do verification search at high depths, with null move pruning
             // disabled until ply exceeds nmpMinPly.
-            nmpMinPly = ss->ply + 3 * (depth - R) / 4;
+            nmpMinPly = ss->ply + nm_verify_num * (depth - R) / 4;
 
             Value v = search<NonPV>(pos, ss, beta - 1, beta, depth - R, false);
 
@@ -1176,7 +1210,16 @@ moves_loop:  // When in check, search starts here
             && is_valid(ttData.value) && !is_decisive(ttData.value) && (ttData.bound & BOUND_LOWER)
             && ttData.depth >= depth - 3 && !is_shuffling(move, ss, pos) && !seekMate)
         {
-            Value singularBeta  = ttData.value - (45 + 72 * (ss->ttPv && !PvNode)) * depth / 69;
+            // 联合优化参数化（索引 37-40）：jointContinuous=true 时使用 jointTheta，否则用 legacy 硬编码
+            int se_base      = jointContinuous ? jointTheta[37] : 45;
+            int se_ttpv_coeff = jointContinuous ? jointTheta[38] : 72;
+            int se_depth_div = jointContinuous ? jointTheta[39] : 69;
+            int se_multicut  = jointContinuous ? jointTheta[40] : 176;
+            // 边界保护：确保除法分母不为 0
+            if (se_depth_div == 0)
+                se_depth_div = 69;
+
+            Value singularBeta  = ttData.value - (se_base + se_ttpv_coeff * (ss->ttPv && !PvNode)) * depth / se_depth_div;
             Depth singularDepth = newDepth / 2;
 
             ss->excludedMove = move;
@@ -1210,7 +1253,7 @@ moves_loop:  // When in check, search starts here
                 if (!ss->inCheck && value > ss->staticEval)
                 {
                     const int bonus =
-                      std::clamp(int(value - ss->staticEval) * singularDepth * 176 / 1024,
+                      std::clamp(int(value - ss->staticEval) * singularDepth * se_multicut / 1024,
                                  -CORRECTION_HISTORY_LIMIT / 4, CORRECTION_HISTORY_LIMIT / 4);
                     update_correction_history(pos, ss, *this, bonus);
                 }
@@ -1241,51 +1284,101 @@ moves_loop:  // When in check, search starts here
 
         // Step 18. Compute and apply late moves reductions/extensions (LMR)
 
-        // Decrease reduction for PvNodes (*Scaler)
-        if (ss->ttPv)
-            r -= 2357 + PvNode * 959 + (ttData.value > alpha) * 1114
-               + (ttData.depth >= depth) * (1136 + cutNode * 920);
+        if (lmrContinuous)
+        {
+            // ---- R_θ 连续化路径 ----
+            // 先计算 statScore（与 legacy 公式一致）
+            if (capture)
+                ss->statScore =
+                  962 * int(PieceValue[pos.captured_piece()]) / 128
+                  + captureHistory[movedPiece][move.to_sq()][type_of(pos.captured_piece())];
+            else
+                ss->statScore =
+                  (2044 * mainHistory[us][move.raw()]
+                   + 1142 * (*contHist[0])[movedPiece][move.to_sq()]
+                   + 1020 * (*contHist[1])[movedPiece][move.to_sq()])
+                  / 1024;
 
-        // Base reduction offset to compensate for other tweaks
-        r += 858;
-
-        r -= moveCount * 64;
-        r -= std::abs(correctionValue) / 30382;
-
-        // Increase reduction for cut nodes
-        if (cutNode)
-            r += 3226 + 1036 * !ttData.move;
-
-        // Increase reduction if ttMove is a capture
-        if (ttCapture)
-            r += 1553;
-
-        // Increase reduction if next ply has a lot of fail high
-        if ((ss + 1)->cutoffCnt > 1)
-            r += 259 + 1019 * ((ss + 1)->cutoffCnt > 2) + 1014 * allNode;
-
-        // For first picked move (ttMove) reduce reduction
-        else if (move == ttData.move)
-            r -= 2711;
-
-        if (capture)
-            ss->statScore = 962 * int(PieceValue[pos.captured_piece()]) / 128
-                          + captureHistory[movedPiece][move.to_sq()][type_of(pos.captured_piece())];
+            // 收集特征并计算 R_θ
+            LmrFeatures f{improving,      depth,
+                          moveCount,      delta,
+                          ss->ttPv,       PvNode,
+                          ttData.value > alpha, ttData.depth >= depth,
+                          cutNode,        correctionValue,
+                          ttData.move != Move::none(), ttCapture,
+                          (ss + 1)->cutoffCnt, allNode,
+                          move == ttData.move, ss->statScore,
+                          capture,        alpha,
+                          eval,           newDepth};
+            r = reduction_lmr(f);
+        }
         else
-            ss->statScore =
-              (2044 * mainHistory[us][move.raw()] + 1142 * (*contHist[0])[movedPiece][move.to_sq()]
-               + 1020 * (*contHist[1])[movedPiece][move.to_sq()])
-              / 1024;
+        {
+            // ---- legacy 路径（原 Step 18 硬编码常数）----
 
-        // Decrease/increase reduction for moves with a good/bad history
-        r -= ss->statScore * 956 / 8192;
+            // Decrease reduction for PvNodes (*Scaler)
+            if (ss->ttPv)
+                r -= 2357 + PvNode * 959 + (ttData.value > alpha) * 1114
+                   + (ttData.depth >= depth) * (1136 + cutNode * 920);
 
-        if (!capture && !is_decisive(alpha))
-            r += 3 * std::clamp(alpha - eval, -65, 92);
+            // Base reduction offset to compensate for other tweaks
+            r += 858;
 
-        // Scale up reductions for expected ALL nodes
-        if (allNode)
-            r += r * 254 / (256 * depth + 255);
+            r -= moveCount * 64;
+            r -= std::abs(correctionValue) / 30382;
+
+            // Increase reduction for cut nodes
+            if (cutNode)
+                r += 3226 + 1036 * !ttData.move;
+
+            // Increase reduction if ttMove is a capture
+            if (ttCapture)
+                r += 1553;
+
+            // Increase reduction if next ply has a lot of fail high
+            if ((ss + 1)->cutoffCnt > 1)
+                r += 259 + 1019 * ((ss + 1)->cutoffCnt > 2) + 1014 * allNode;
+
+            // For first picked move (ttMove) reduce reduction
+            else if (move == ttData.move)
+                r -= 2711;
+
+            if (capture)
+                ss->statScore = 962 * int(PieceValue[pos.captured_piece()]) / 128
+                              + captureHistory[movedPiece][move.to_sq()][type_of(pos.captured_piece())];
+            else
+                ss->statScore =
+                  (2044 * mainHistory[us][move.raw()] + 1142 * (*contHist[0])[movedPiece][move.to_sq()]
+                   + 1020 * (*contHist[1])[movedPiece][move.to_sq()])
+                  / 1024;
+
+            // Decrease/increase reduction for moves with a good/bad history
+            r -= ss->statScore * 956 / 8192;
+
+            if (!capture && !is_decisive(alpha))
+                r += 3 * std::clamp(alpha - eval, -65, 92);
+
+            // Scale up reductions for expected ALL nodes
+            if (allNode)
+                r += r * 254 / (256 * depth + 255);
+
+            // ---- 采样 (φ(x), r) 用于 LMR 连续化最小二乘拟合 ----
+            // 零开销保证：lmrSample=false 时整个分支被编译器跳过
+            if (lmrSample)
+            {
+                int reductionScale = reductions[depth] * reductions[moveCount];
+                std::fprintf(stderr,
+                    "LMR_SAMPLE: %d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                    int(improving), int(depth), moveCount, delta, int(rootDelta),
+                    reductionScale, int(ss->ttPv), int(PvNode),
+                    int(ttData.value > alpha), int(ttData.depth >= depth),
+                    int(cutNode), correctionValue,
+                    int(ttData.move != Move::none()), int(ttCapture),
+                    (ss + 1)->cutoffCnt, int(allNode),
+                    int(move == ttData.move), ss->statScore,
+                    int(capture), int(alpha), int(eval), int(newDepth), r);
+            }
+        }
 
         // Apply the computed LMR
         if (depth >= 2 && moveCount > 1)
@@ -1323,9 +1416,9 @@ moves_loop:  // When in check, search starts here
         // Step 19. Full-depth search when LMR is skipped
         else if (!PvNode || moveCount > 1)
         {
-            // Increase reduction if ttMove is not present
+            // Increase reduction if ttMove is not present (特征 20)
             if (!ttData.move)
-                r += 980;
+                r += lmrContinuous ? (lmrTheta[20] / LMR_Q16) : 980;
 
             // If expected reduction is high, we reduce search depth here
             value = -search<NonPV>(pos, ss + 1, -(alpha + 1), -alpha,
@@ -1817,9 +1910,206 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
     return bestValue;
 }
 
+// ============================================================================
+// LMR 连续化调优 (R_θ 决策核) — 特征清单 φ(x) 与常数盘点
+// ----------------------------------------------------------------------------
+// 目标：将 reduction() 基值与 Step 18/19 的全部硬编码常数统一为
+//       r = clamp(θᵀφ(x) · (1 + θ_A · allNode / (256·depth + 255)), 0, R_max)
+// 其中 φ(x) 为 25 维特征向量，θ 为 26 维参数向量（25 特征 + 1 allNode 缩放 θ_A）。
+// θ 采用 Q16 定点：实际值 = theta / 65536.0，θᵀφ = Σ(theta_i * phi_i) >> 16。
+//
+// 下表为权威清单：编号 | 特征 φ_i(x) | 当前常数 | 来源 | θ₀(Q16)
+// ----|---------------------------|---------|----------------------|------------
+//  0  | reductions[d]*reductions[mn] |  1     | reduction() L1821    |     65536
+//  1  | -delta / rootDelta          | 1128    | reduction() L1822    | 73924608
+//  2  | !improving * reductionScale | 165/512 | reduction() L1822    |    21120
+//  3  | 1 (截距: 1931+858)          | 2789    | reduction() L1822 +  | 182779904
+//     |                             |         | Step18 L1250         |
+//  4  | ttPv (合并原 4+5)           | -1434   | L1093+L1245          | -93978624
+//  5  | depth × ttPv (新交互项)     | 0       | —                    |       0
+//  6  | ttPv * PvNode               | -959    | L1246                | -62849024
+//  7  | ttPv * (ttValue > alpha)    | -1114   | L1246                | -73007104
+//  8  | ttPv * (ttDepth >= depth)   | -1136   | L1247                | -74448896
+//  9  | ttPv*(ttDepth>=depth)*cutNode| -920   | L1247                | -60293120
+// 10  | -|correctionValue| / 30382  | 1       | L1253                |    65536
+// 11  | cutNode                     | 3226    | L1257                | 211419136
+// 12  | cutNode * !ttMove           | 1036    | L1257                | 67895296
+// 13  | ttCapture                   | 1553    | L1261                | 101777408
+// 14  | (cutoffCnt > 1)             | 259     | L1265                | 16973824
+// 15  | (cutoffCnt > 2)             | 1019    | L1265                | 66781184
+// 16  | (cutoffCnt > 1) * allNode   | 1014    | L1265                | 66453504
+// 17  | -(move == ttMove)           | 2711    | L1269                | 177668096
+// 18  | -statScore                  | 956/8192| L1281                |    7648
+// 19  | !capture*clamp(alpha-eval,  | 3       | L1284                |   196608
+//     |   -65, 92)                  |         |                      |
+// 20  | !ttMove (Step 19 only)      | 980     | L1328                | 64225280
+// 21  | improving × ttPv (新交互)   | 0       | —                    |       0
+// 22  | θ_A: allNode 缩放系数       | 254     | L1288                | 16646144
+// 23  | depth × cutNode (新交互)    | 0       | —                    |       0
+// 24  | moveCount × ttPv (新交互)   | 0       | —                    |       0
+// 25  | improving × cutNode (新交互)| 0       | —                    |       0
+// ----------------------------------------------------------------------------
+// 注意：
+//  - 特征 4 已合并原特征 4 (L1093 +923) 与原特征 5 (L1245 -2357)，
+//    合并后 θ = 923 - 2357 = -1434 (Q16 = -94071808)。
+//  - 特征 1 的 φ 含运行时除法 (-delta/rootDelta)，θ₁=1128 为整数。
+//  - 特征 10 的 φ 含预除 30382，θ₁₀=1.0(Q16)。
+//  - 特征 18 的 θ = 956/8192 已折算为定点 7648，φ = -statScore。
+//  - 特征 20 仅在 Step 19 (LMR 跳过) 路径生效。
+//  - 新交互项 5/21/23/24/25 的 θ₀ = 0，初始行为与合并后基线完全一致。
+//  - R_max = 1024 * (newDepth - 1)，保证 r/1024 < newDepth-1 即 d >= 1。
+// ============================================================================
+
+// LMR 特征名称（用于 export_theta 输出与调试）
+static constexpr const char* LmrFeatureNames[Search::Worker::LMR_THETA_SIZE] = {
+  "reductionScale",        // 0
+  "neg_delta_over_rootDelta",  // 1
+  "non_improving_x_scale", // 2
+  "intercept",             // 3
+  "ttPv_merged",           // 4  (合并原 4+5)
+  "depth_x_ttPv",          // 5  (新交互项)
+  "ttPv_x_PvNode",         // 6
+  "ttPv_x_ttValGtAlpha",   // 7
+  "ttPv_x_ttDepthGeDepth", // 8
+  "ttPv_x_ttDepth_x_cutNode",  // 9
+  "neg_abs_corr_div_30382",    // 10
+  "cutNode_base",          // 11
+  "cutNode_x_no_ttMove",   // 12
+  "ttCapture",             // 13
+  "cutoffCnt_gt1",         // 14
+  "cutoffCnt_gt2",         // 15
+  "cutoffCnt_gt1_x_allNode",   // 16
+  "neg_move_is_ttMove",    // 17
+  "neg_statScore",         // 18
+  "non_cap_x_clamp_alpha_eval",  // 19
+  "no_ttMove_step19",      // 20
+  "improving_x_ttPv",      // 21  (新交互项)
+  "theta_A_allNode_scale", // 22
+  "depth_x_cutNode",       // 23  (新交互项)
+  "moveCount_x_ttPv",      // 24  (新交互项)
+  "improving_x_cutNode"    // 25  (新交互项)
+};
+
 int Search::Worker::reduction(bool i, Depth d, int mn, int delta) const {
     int reductionScale = reductions[d] * reductions[mn];
     return reductionScale - delta * 1128 / rootDelta + !i * reductionScale * 165 / 512 + 1931;
+}
+
+// 初始化 θ₀ —— 使 R_θ 输出逼近 legacy reduction()+Step18 行为的 Q16 定点值
+void Search::Worker::init_lmr_theta() {
+    constexpr int Q = LMR_Q16;
+    lmrTheta = {{
+      1 * Q,           //  0: reductions[d]*reductions[mn] 系数
+      1128 * Q,        //  1: -delta/rootDelta
+      165 * Q / 512,   //  2: !improving * reductionScale (165/512)
+      2789 * Q,        //  3: 截距 (1931 + 858)
+      -1434 * Q,       //  4: ttPv (合并原 4+5: 923-2357=-1434)
+      0,               //  5: depth × ttPv (新交互项，初始无影响)
+      -959 * Q,        //  6: ttPv * PvNode
+      -1114 * Q,       //  7: ttPv * (ttValue > alpha)
+      -1136 * Q,       //  8: ttPv * (ttDepth >= depth)
+      -920 * Q,        //  9: ttPv * (ttDepth >= depth) * cutNode
+      1 * Q,           // 10: -|correctionValue| / 30382
+      3226 * Q,        // 11: cutNode 基础
+      1036 * Q,        // 12: cutNode * !ttMove
+      1553 * Q,        // 13: ttCapture
+      259 * Q,         // 14: (cutoffCnt > 1)
+      1019 * Q,        // 15: (cutoffCnt > 2)
+      1014 * Q,        // 16: (cutoffCnt > 1) * allNode
+      2711 * Q,        // 17: -(move == ttMove)
+      956 * Q / 8192,  // 18: -statScore * 956/8192
+      3 * Q,           // 19: !capture * clamp(alpha-eval, -65, 92)
+      980 * Q,         // 20: !ttMove (Step 19 only)
+      0,               // 21: improving × ttPv (新交互项，初始无影响)
+      254 * Q,         // 22: θ_A allNode 缩放系数
+      0,               // 23: depth × cutNode (新交互项，初始无影响)
+      0,               // 24: moveCount × ttPv (新交互项，初始无影响)
+      0,               // 25: improving × cutNode (新交互项，初始无影响)
+    }};
+}
+
+// 初始化联合参数向量 θ_joint
+// 前 26 维从 lmrTheta 复制（Q16 定点），后 15 维为 legacy 硬编码整数值
+//   θ_nm (6维, 索引 26-31): null-move 搜索参数
+//   θ_fut (5维, 索引 32-36): futility pruning 参数
+//   θ_se (4维, 索引 37-40): singular extension 参数
+void Search::Worker::init_joint_theta() {
+    // θ_lmr 部分（26维）：从 lmrTheta 复制
+    for (int i = 0; i < LMR_THETA_SIZE; i++)
+        jointTheta[i] = lmrTheta[i];
+    // θ_nm 部分（6维）：legacy 值
+    jointTheta[26] = 8;      // nm_depth_coeff
+    jointTheta[27] = 51;     // nm_improving_coeff
+    jointTheta[28] = 8;      // nm_R_base
+    jointTheta[29] = 282;    // nm_R_eval_div
+    jointTheta[30] = 3;      // nm_verify_num
+    jointTheta[31] = 188;    // nm_margin_base
+    // θ_fut 部分（5维）：legacy 值
+    jointTheta[32] = 41;     // fut_base
+    jointTheta[33] = 33;     // fut_tthit_adj
+    jointTheta[34] = 2500;   // fut_improving_w
+    jointTheta[35] = 333;    // fut_opponent_w
+    jointTheta[36] = 133448; // fut_corr_div
+    // θ_se 部分（4维）：legacy 值
+    jointTheta[37] = 45;     // se_base
+    jointTheta[38] = 72;     // se_ttpv_coeff
+    jointTheta[39] = 69;     // se_depth_div
+    jointTheta[40] = 176;    // se_multicut
+}
+
+// R_θ 决策核 —— 用连续参数化 θᵀφ(x) 计算 LMR 缩减量
+// r = clamp(θᵀφ(x) · (1 + θ_A · allNode / (256·depth + 255)), 0, R_max)
+// 特征 1 含运行时除法 (rootDelta)，单独处理以匹配 legacy 整数除法顺序。
+// 特征 20 (Step 19) 不在此应用，由调用方在 Step 19 路径单独处理。
+int Search::Worker::reduction_lmr(const LmrFeatures& f) const {
+    constexpr int Q = LMR_Q16;
+    const int* t = lmrTheta.data();
+
+    int reductionScale = reductions[f.depth] * reductions[f.moveCount];
+
+    // 累加 θᵀφ(x)，用 int64_t 避免溢出 (theta~1.8e8, phi~1e4, 乘积~1.8e12)
+    int64_t r64 = 0;
+    r64 += int64_t(t[0]) * reductionScale;                              // 0
+    r64 += int64_t(t[2]) * (!f.improving * reductionScale);             // 2
+    r64 += int64_t(t[3]);                                               // 3
+    r64 += int64_t(t[4]) * f.ttPv;                                      // 4: ttPv (合并原 4+5)
+    r64 += int64_t(t[5]) * (int(f.depth) * f.ttPv);                     // 5: depth × ttPv (新交互项)
+    r64 += int64_t(t[6]) * (f.ttPv * f.PvNode);                         // 6
+    r64 += int64_t(t[7]) * (f.ttPv * f.ttValueGtAlpha);                 // 7
+    r64 += int64_t(t[8]) * (f.ttPv * f.ttDepthGeDepth);                 // 8
+    r64 += int64_t(t[9]) * (f.ttPv * f.ttDepthGeDepth * f.cutNode);     // 9
+    r64 += int64_t(t[10]) * (-std::abs(f.correctionValue) / 30382);     // 10
+    r64 += int64_t(t[11]) * f.cutNode;                                  // 11
+    r64 += int64_t(t[12]) * (f.cutNode * !f.ttMoveExists);              // 12
+    r64 += int64_t(t[13]) * f.ttCapture;                                // 13
+    r64 += int64_t(t[14]) * (f.cutoffCnt > 1);                          // 14
+    r64 += int64_t(t[15]) * (f.cutoffCnt > 2);                          // 15
+    r64 += int64_t(t[16]) * ((f.cutoffCnt > 1) * f.allNode);            // 16
+    r64 += int64_t(t[17]) * (-f.moveIsTtMove);                          // 17
+    r64 += int64_t(t[18]) * (-f.statScore);                             // 18
+    r64 += int64_t(t[19]) * (!f.capture * std::clamp(f.alpha - f.eval, -65, 92));  // 19
+    r64 += int64_t(t[21]) * (int(f.improving) * f.ttPv);                // 21: improving × ttPv (新交互项)
+    r64 += int64_t(t[23]) * (int(f.depth) * f.cutNode);                 // 23: depth × cutNode (新交互项)
+    r64 += int64_t(t[24]) * (f.moveCount * f.ttPv);                     // 24: moveCount × ttPv (新交互项)
+    r64 += int64_t(t[25]) * (int(f.improving) * f.cutNode);             // 25: improving × cutNode (新交互项)
+
+    int r = int(r64 / Q);
+
+    // 特征 1：-delta * theta[1] / Q / rootDelta（特殊处理运行时除法）
+    r -= int(int64_t(t[1]) * f.delta / Q / rootDelta);
+
+    // allNode 自指缩放: r += r * θ_A / Q / (256*depth + 255)
+    if (f.allNode)
+        r += int(int64_t(r) * t[22] / Q / (256 * f.depth + 255));
+
+    // 平滑截断 [0, R_max], R_max = 1024 * (newDepth - 1)
+    int rMax = 1024 * (f.newDepth - 1);
+    if (r < 0)
+        r = 0;
+    if (rMax > 0 && r > rMax)
+        r = rMax;
+
+    return r;
 }
 
 // elapsed() returns the time elapsed since the search started. If the

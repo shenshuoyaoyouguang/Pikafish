@@ -210,6 +210,31 @@ struct SharedState {
 
 class Worker;
 
+// LMR 连续化调优 (R_θ) 特征包 —— 打包 reduction_lmr() 所需的全部运行时特征
+// 详见 search.cpp 中 reduction() 上方的特征清单注释。
+struct LmrFeatures {
+    bool   improving;          // 是否改进节点
+    Depth  depth;              // 当前深度
+    int    moveCount;          // 走法序数
+    int    delta;              // beta - alpha
+    bool   ttPv;               // ss->ttPv
+    bool   PvNode;             // 是否 PV 节点
+    bool   ttValueGtAlpha;     // ttData.value > alpha
+    bool   ttDepthGeDepth;     // ttData.depth >= depth
+    bool   cutNode;            // 是否 cut 节点
+    int    correctionValue;    // 校正值
+    bool   ttMoveExists;       // ttData.move != Move::none()
+    bool   ttCapture;          // ttMove 是否为吃子
+    int    cutoffCnt;          // (ss+1)->cutoffCnt
+    bool   allNode;            // 是否 ALL 节点
+    bool   moveIsTtMove;       // move == ttData.move
+    int    statScore;          // 历史分数
+    bool   capture;            // 当前走法是否吃子
+    Value  alpha;              // alpha 界
+    Value  eval;               // 静态估值
+    Depth  newDepth;           // newDepth（用于 R_max 计算）
+};
+
 struct InfoShort {
     int   depth;
     Score score;
@@ -297,6 +322,30 @@ class Worker {
 
     void ensure_network_replicated();
 
+    // ---- LMR 连续化调优 (R_θ 决策核) 公开常量 ----
+    // 特征维度：25 个特征 + 1 个 allNode 缩放系数 θ_A
+    //   合并原特征 4+5 (均基于 ttPv) → 新特征 4 (ttPv_merged)
+    //   新增交互项: 5 (depth×ttPv), 21 (improving×ttPv),
+    //               23 (depth×cutNode), 24 (moveCount×ttPv), 25 (improving×cutNode)
+    static constexpr int LMR_THETA_SIZE = 26;
+    // Q16 定点：实际值 = theta / 65536.0
+    static constexpr int LMR_Q16 = 65536;
+
+    // LMR 连续化参数向量 θ（Q16 定点）与开关
+    std::array<int, LMR_THETA_SIZE> lmrTheta;
+    bool                           lmrContinuous = false;  // false=legacy, true=R_θ
+    bool                           lmrSample     = false;  // 采样开关：legacy 路径下收集 (φ(x), r)
+
+    // ---- 联合搜索优化 (Joint θ) 公开常量 ----
+    // θ_joint = [θ_lmr(26维), θ_nm(6维), θ_fut(5维), θ_se(4维)] = 41 维
+    //   θ_nm: null-move 搜索参数（整数，非 Q16）
+    //   θ_fut: futility pruning 参数（整数，非 Q16）
+    //   θ_se: singular extension 参数（整数，非 Q16）
+    // jointContinuous=false 时使用 legacy 硬编码常数，true 时使用 jointTheta
+    static constexpr int JOINT_THETA_SIZE = 41;
+    std::array<int, JOINT_THETA_SIZE> jointTheta;
+    bool                              jointContinuous = false;  // false=legacy, true=参数化
+
     // Public because they need to be updatable by the stats
     ButterflyHistory mainHistory;
     LowPlyHistory    lowPlyHistory;
@@ -328,6 +377,16 @@ class Worker {
     Value qsearch(Position& pos, Stack* ss, Value alpha, Value beta);
 
     int reduction(bool i, Depth d, int mn, int delta) const;
+
+    // ---- LMR 连续化调优 (R_θ 决策核) 方法 ----
+    // 用 θᵀφ(x) 计算连续化缩减量，替代 reduction() + Step18 硬编码路径
+    int reduction_lmr(const LmrFeatures& f) const;
+
+    // 将 θ₀ 初始化为逼近 legacy 行为的定点值
+    void init_lmr_theta();
+
+    // 初始化联合参数向量 θ_joint（前 26 维从 lmrTheta 复制，后 15 维为 legacy 值）
+    void init_joint_theta();
 
     // Pointer to the search manager, only allowed to be called by the main thread
     SearchManager* main_manager() const {
@@ -361,6 +420,7 @@ class Worker {
 
     // Reductions lookup table initialized at startup
     std::array<int, MAX_PLY + 10> reductions;  // [depth or moveNumber]
+
 
     // The main thread has a SearchManager, the others have a nullptr
     std::unique_ptr<SearchManager> manager;

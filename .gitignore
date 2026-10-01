@@ -19,3 +19,29 @@ tsan.supp
 __pycache__/
 tests/syzygy
 tests/bench_tmp.epd
+# LMR/Joint optimization temporary files
+*.log
+*.pid
+samples*.txt
+nul
+spsa_26dim_*
+theta_fitted_backup.txt
+theta_fitted_old_23dim.txt
+theta_optimized_deep.txt
+test_fitted.txt
+match_result.txt
+verify_200.log
+validate_*.txt
+joint_validate_500_optimized_summary.json
+joint_validate_final_500_100k_checkpoint.json
+joint_theta_round13.txt
+
+# IDE and tool directories
+.vs/
+.arts/
+.workbuddy/
+
+# Debug files in src/
+src/bench_output*.txt
+src/gdb_*.txt
+src/test_sample.txt
