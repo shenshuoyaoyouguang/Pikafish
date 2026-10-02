@@ -77,6 +77,27 @@ class Network {
 
     void load_external(const std::filesystem::path&, const std::filesystem::path&, EvalFile&);
 
+#ifdef TRAINING_TOOL
+    // Accessors exposed only to the training/extraction tool so that it can
+    // reach the underlying FeatureTransformer and NetworkArchitecture objects
+    // without touching the (private) read/write_parameters machinery here.
+    FeatureTransformer&       get_feature_transformer() { return featureTransformer; }
+    const FeatureTransformer& get_feature_transformer() const { return featureTransformer; }
+    NetworkArchitecture&       get_network(int b) { return network[b]; }
+    const NetworkArchitecture& get_network(int b) const { return network[b]; }
+
+    // Expose the private parameter I/O so the tool can serialise the network
+    // to/from a plain (uncompressed) binary stream using the very same code
+    // path as the engine, guaranteeing a perfect round-trip.
+    bool tool_write_parameters(std::ostream& stream, const std::string& desc) const {
+        return write_parameters(stream, desc);
+    }
+    bool tool_read_parameters(std::istream& stream, std::string& desc) {
+        return read_parameters(stream, desc);
+    }
+    static constexpr u32 tool_hash() { return hash; }
+#endif
+
    private:
     void initialize();
 

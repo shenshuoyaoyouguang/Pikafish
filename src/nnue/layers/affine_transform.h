@@ -413,6 +413,22 @@ class AffineTransform {
 #endif
     }
 
+#ifdef TRAINING_TOOL
+    // Expose individual weights/biases for training tools.
+    // get_weight(i) returns the logical (un-scrambled) weight at index i.
+    // i ranges from 0 to OutputDimensions * InputDimensions - 1.
+    // NOTE: use concrete types (i8 / OutputType) here rather than the private
+    // aliases WeightType/BiasType, which are only declared further below and
+    // would otherwise shadow the outer-scope aliases of the same name
+    // (triggering -Wchanges-meaning and, for BiasType, a type mismatch).
+    i8  get_weight(IndexType i) const { return weights[get_weight_index(i)]; }
+    void set_weight(IndexType i, i8 v) { weights[get_weight_index(i)] = v; }
+    OutputType get_bias(IndexType i) const { return biases[i]; }
+    void set_bias(IndexType i, OutputType v) { biases[i] = v; }
+    static constexpr IndexType num_weights() { return OutputDimensions * InputDimensions; }
+    static constexpr IndexType num_biases() { return OutputDimensions; }
+#endif
+
    private:
     using BiasType   = OutputType;
     using WeightType = i8;

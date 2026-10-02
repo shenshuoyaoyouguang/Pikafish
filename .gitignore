@@ -24,6 +24,8 @@ tests/bench_tmp.epd
 *.pid
 samples*.txt
 nul
+# Training data files (large, should not be tracked)
+training_data*.txt
 spsa_26dim_*
 theta_fitted_backup.txt
 theta_fitted_old_23dim.txt
@@ -40,6 +42,16 @@ joint_theta_round13.txt
 .vs/
 .arts/
 .workbuddy/
+
+# CMake build directories
+build/
+tests/build/
+
+# Generated compile database
+compile_commands.json
+
+# Verification artifacts
+.resultverify/
 
 # Debug files in src/
 src/bench_output*.txt

@@ -282,7 +282,7 @@ void Position::set_check_info() const {
 
     // We have to take special cares about the hollow cannons and checks
     st->needFullCheck =
-      checkers() || (attacks_bb(ROOK, king_square(sideToMove)) & pieces(~sideToMove, CANNON));
+      bool(checkers()) || bool(attacks_bb(ROOK, king_square(sideToMove)) & pieces(~sideToMove, CANNON));
 
     st->checkSquares[PAWN]   = attacks_bb(PAWN_TO, ksq, sideToMove);
     st->checkSquares[KNIGHT] = attacks_bb(KNIGHT_TO, ksq, pieces());
@@ -291,11 +291,19 @@ void Position::set_check_info() const {
     st->checkSquares[KING] = st->checkSquares[ADVISOR] = st->checkSquares[BISHOP] = 0;
 
     Bitboard hollowCannons = st->checkSquares[ROOK] & pieces(sideToMove, CANNON);
-    if (hollowCannons)
+    if (bool(hollowCannons))
     {
         Bitboard hollowCannonDiscover = Bitboard(0);
+        // Guard against out-of-range squares that may appear in checkSquares[ROOK]
+        // when the 128-bit magic-bitboard index computation is miscompiled (notably
+        // by GCC 15.x LTO on MinGW).  An invalid square here would make between_bb()
+        // read past BetweenBB[SQUARE_NB][SQUARE_NB] and crash with a segfault.
         while (hollowCannons)
-            hollowCannonDiscover |= between_bb(pop_lsb(hollowCannons), ksq);
+        {
+            Square s = pop_lsb(hollowCannons);
+            if (is_ok(s) && is_ok(ksq))
+                hollowCannonDiscover |= between_bb(s, ksq);
+        }
         for (PieceType pt = ROOK; pt < KING; ++pt)
             st->checkSquares[pt] |= hollowCannonDiscover;
     }
@@ -399,13 +407,18 @@ void Position::update_blockers() const {
     while (snipers)
     {
         Square   sniperSq = pop_lsb(snipers);
+        // Guard against out-of-range squares from miscompiled 128-bit magic
+        // bitboard lookups (e.g. GCC 15.x LTO on MinGW).  An invalid sniperSq
+        // would make between_bb() and piece_on() read out of bounds.
+        if (!is_ok(sniperSq) || !is_ok(ksq))
+            continue;
         bool     isCannon = type_of(piece_on(sniperSq)) == CANNON;
         Bitboard b = between_bb(ksq, sniperSq) & (isCannon ? pieces() ^ sniperSq : occupancy);
 
-        if (b && ((!isCannon && !more_than_one(b)) || (isCannon && popcount(b) == 2)))
+        if (bool(b) && ((!isCannon && !more_than_one(b)) || (isCannon && popcount(b) == 2)))
         {
             st->blockersForKing[c] |= b;
-            if (b & pieces(c))
+            if (bool(b & pieces(c)))
                 st->pinners[~c] |= sniperSq;
         }
     }
@@ -995,7 +1008,7 @@ bool Position::see_ge(Move m, int threshold) const {
     Bitboard attackers = attackers_to(to, occupied);
 
     // Flying general
-    bool kingAttacks = attackers & pieces(KING);
+    bool kingAttacks = (attackers & pieces(KING)) != 0;
     if (kingAttacks)
         attackers |= attacks_bb(ROOK, to, occupied) & pieces(KING);
 

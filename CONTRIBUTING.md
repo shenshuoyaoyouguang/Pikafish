@@ -12,6 +12,7 @@ making contributions to Pikafish.
   - [Submitting Pull Requests](#submitting-pull-requests)
 - [Code Style](#code-style)
 - [Community and Communication](#community-and-communication)
+- [Dependency Management](#dependency-management)
 - [License](#license)
 
 ## Building Pikafish
@@ -73,6 +74,65 @@ Changes to Pikafish C++ code should respect our coding style defined by
 By contributing to Pikafish, you agree that your contributions will be licensed
 under the GNU General Public License v3.0. See [Copying.txt][copying-link] for
 more details.
+
+## Dependency Management
+
+Pikafish vendors its native dependencies rather than relying on a system package
+manager. This keeps the build self-contained and reproducible. The only
+automated dependency tracking is for GitHub Actions (via
+[Dependabot](.github/dependabot.yml)); the C/C++ libraries below are synced
+manually.
+
+### zstd (vendored under `src/external/`)
+
+zstd is embedded to decompress NNUE net files at runtime. Only the **decompression**
+subset of the library is vendored (no compression code).
+
+**Update procedure:**
+
+1. Download a new release from <https://github.com/facebook/zstd> (tagged
+   release tarball).
+2. Copy **only** the decompression-related sources into `src/external/`:
+   - `lib/common/*`           → `src/external/common/`
+   - `lib/decompress/*`       → `src/external/decompress/`
+   - `lib/zstd.h`, `lib/zstd_errors.h` → `src/external/`
+   - Keep the amd64 assembly (`huf_decompress_amd64.S`) in sync with the
+     matching C sources.
+3. Rebuild (`make -j build` from `src/`) and run `./pikafish bench`.
+4. **Verify the bench node count is unchanged** — this confirms the decompressor
+   still produces byte-identical nets. If the node count differs, do not ship
+   the update; investigate the regression first.
+
+### pybind11 (toolchain only)
+
+pybind11 is used solely by `tools/nnue_pybind.cpp` to expose the NNUE evaluator
+to Python for training/verification scripts. It is **not** linked into the
+`pikafish` engine binary.
+
+**Update procedure:**
+
+1. Download the single-header distribution from
+   <https://github.com/pybind/pybind11> (or the full source tree).
+2. Replace the header(s) on the include path used by
+   `tools/build_nnue_pybind.sh`.
+3. Rebuild the binding with `bash tools/build_nnue_pybind.sh` and run
+   `python tools/test_nnue_pybind.py` to confirm it still compiles and the
+   numerical tests pass.
+
+### GoogleTest (test framework)
+
+The unit-test framework is fetched on demand via CMake `FetchContent` (see the
+test configuration). There is **no vendored copy** and no manual update step —
+the version is pinned in the test CMake configuration and refreshed by
+re-running CMake configuration.
+
+### GitHub Actions
+
+CI action versions (`actions/checkout`, `actions/upload-artifact`,
+`actions/download-artifact`, `msys2/setup-msys2`,
+`jidicula/clang-format-action`, `github/codeql-action`, …) are tracked
+automatically by Dependabot (`.github/dependabot.yml`). Review the weekly
+pull requests and bump after confirming CI is green.
 
 Thank you for contributing to Pikafish and helping us make it even better!
 

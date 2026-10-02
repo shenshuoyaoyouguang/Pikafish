@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] - 2026-10-01
+## [Unreleased]
+
+## [2026.10.02] - 2026-10-02
 
 ### Added
 - LMR 连续参数化：reduction() 函数支持 26 维 θ 参数向量驱动（LMR_Continuous + LMR_Theta UCI 选项）

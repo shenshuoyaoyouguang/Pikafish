@@ -1,0 +1,26 @@
+# Dependabot configuration for Pikafish.
+#
+# Pikafish vendors its C/C++ dependencies (zstd under src/external/, pybind11
+# for the NNUE toolchain only) and does not use a package manager for the
+# engine itself. We therefore only track GitHub Actions versions so that CI
+# stays on supported, patched action releases.
+#
+# See CONTRIBUTING.md -> "Dependency Management" for the manual sync procedure
+# of the vendored libraries.
+version: 2
+
+updates:
+  # Track GitHub Actions used by .github/workflows/*.yml
+  # (actions/checkout, actions/upload-artifact, actions/download-artifact,
+  #  msys2/setup-msys2, jidicula/clang-format-action, github/codeql-action, ...).
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"

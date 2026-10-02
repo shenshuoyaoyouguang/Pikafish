@@ -1,0 +1,4 @@
+// 由 CMake 自动生成，请勿手动编辑
+#pragma once
+// bench runner 可执行文件的绝对路径（供 test_search 子进程调用）
+#define BENCH_RUNNER_PATH "@BENCH_RUNNER_PATH_VALUE@"

@@ -98,6 +98,7 @@ VPATH = $(shell find -L . \( -path './universal' -o -path './temp_builds' \) -pr
 #                     --- ( address   )      --- enable memory access checks
 #                     --- ...etc...          --- see compiler documentation for supported sanitizers
 # optimize = yes/no   --- (-O3/-fast etc.)   --- Enable/Disable optimizations
+# lto = yes/no        --- -flto              --- Enable/Disable link time optimization
 # arch = (name)       --- (-arch)            --- Target architecture
 # bits = 64/32        --- -DIS_64BIT         --- 64-/32-bit operating system
 # prefetch = yes/no   --- -DUSE_PREFETCH     --- Use prefetch asm-instruction
@@ -166,6 +167,7 @@ bits = 64
 prefetch = no
 popcnt = no
 pext = no
+lto = yes
 sse = no
 mmx = no
 sse2 = no
@@ -922,8 +924,26 @@ endif
 ### 3.9 Link Time Optimization
 ### This is a mix of compile and link time options because the lto link phase
 ### needs access to the optimization flags.
+###
+### GCC 15.x has a known LTO link-time internal compiler error (lto1.exe:
+### internal compiler error) on MinGW and some Linux targets.  When the
+### compiler is real GCC (not clang pretending to be gcc) with major
+### version >= 15 we force lto=no unless the user explicitly requested it
+### on the command line.  This keeps Clang and older GCC unaffected.
+ifeq ($(COMP),gcc)
+	ifeq ($(gccisclang),)
+		gccmajorver := $(shell $(CXX) -dumpversion 2>/dev/null | cut -f1 -d.)
+		ifeq ($(shell expr "$(gccmajorver)" '>=' 15 2>/dev/null),1)
+			ifneq ($(origin lto),command line)
+				lto = no
+			endif
+		endif
+	endif
+endif
+
 ifeq ($(optimize),yes)
 ifeq ($(debug),no)
+ifeq ($(lto),yes)
 	ifeq ($(arch),wasm32)
 	else ifneq ($(TARGET_KERNEL),Darwin)
 		LLD_BIN := $(shell command -v ld.lld 2>/dev/null)
@@ -965,6 +985,7 @@ ifeq ($(debug),no)
 		CXXFLAGS += -flto -flto-partition=one
 		LDFLAGS += $(CXXFLAGS) -save-temps
 	endif
+endif
 endif
 endif
 
@@ -1231,6 +1252,7 @@ config-sanity: net
 	echo "prefetch: '$(prefetch)'" && \
 	echo "popcnt: '$(popcnt)'" && \
 	echo "pext: '$(pext)'" && \
+	echo "lto: '$(lto)'" && \
 	echo "sse: '$(sse)'" && \
 	echo "mmx: '$(mmx)'" && \
 	echo "sse2: '$(sse2)'" && \
@@ -1269,6 +1291,7 @@ config-sanity: net
 	(test "$(prefetch)" = "yes" || test "$(prefetch)" = "no") && \
 	(test "$(popcnt)" = "yes" || test "$(popcnt)" = "no") && \
 	(test "$(pext)" = "yes" || test "$(pext)" = "no") && \
+	(test "$(lto)" = "yes" || test "$(lto)" = "no") && \
 	(test "$(sse)" = "yes" || test "$(sse)" = "no") && \
 	(test "$(mmx)" = "yes" || test "$(mmx)" = "no") && \
 	(test "$(sse2)" = "yes" || test "$(sse2)" = "no") && \

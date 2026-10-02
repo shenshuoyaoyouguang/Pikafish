@@ -232,7 +232,7 @@ struct LmrFeatures {
     bool   capture;            // 当前走法是否吃子
     Value  alpha;              // alpha 界
     Value  eval;               // 静态估值
-    Depth  newDepth;           // newDepth（用于 R_max 计算）
+    Depth  newDepth;           // newDepth（调用点仍聚合填充；R_θ 移除 R_max 截断后未参与计算）
 };
 
 struct InfoShort {
@@ -326,7 +326,8 @@ class Worker {
     // 特征维度：25 个特征 + 1 个 allNode 缩放系数 θ_A
     //   合并原特征 4+5 (均基于 ttPv) → 新特征 4 (ttPv_merged)
     //   新增交互项: 5 (depth×ttPv), 21 (improving×ttPv),
-    //               23 (depth×cutNode), 24 (moveCount×ttPv), 25 (improving×cutNode)
+    //               23 (depth×cutNode), 25 (improving×cutNode)
+    //   特征 24: moveCount 线性项 (对应 legacy r -= moveCount*64, θ₀=-64)
     static constexpr int LMR_THETA_SIZE = 26;
     // Q16 定点：实际值 = theta / 65536.0
     static constexpr int LMR_Q16 = 65536;

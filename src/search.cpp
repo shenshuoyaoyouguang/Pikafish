@@ -1127,6 +1127,10 @@ moves_loop:  // When in check, search starts here
         if (ss->ttPv)
             r += 923;
 
+        // 保存 ttPv 快照——Singular Extension 递归搜索可能修改 ss->ttPv，
+        // lmrContinuous 路径需用 oldTtPv 补偿 +923 与 -2357 使用的 ttPv 不一致。
+        const bool oldTtPv = ss->ttPv;
+
         // Step 15. Pruning at shallow depths.
         // Depth conditions are important for mate finding.
         if (!rootNode && pos.major_material(us) && !is_loss(bestValue))
@@ -1311,6 +1315,14 @@ moves_loop:  // When in check, search starts here
                           capture,        alpha,
                           eval,           newDepth};
             r = reduction_lmr(f);
+            // Singular Extension 递归搜索可能修改 ss->ttPv，导致 oldTtPv ≠ ss->ttPv。
+            // 特征4 = -1434 = 923-2357 假设 +923 和 -2357 使用同一 ttPv，
+            // 但 legacy 中 +923 用 oldTtPv（line 1128）、-2357 用 ss->ttPv（Step18）。
+            // 补偿差值：923 * (oldTtPv - ss->ttPv) 使 lmrContinuous 与 legacy 逐位对齐。
+            r += 923 * (int(oldTtPv) - int(ss->ttPv));
+            // allNode 自指缩放（在 ttPv 补偿之后执行，与 legacy L1371-1372 顺序一致）
+            if (allNode)
+                r += int(int64_t(r) * lmrTheta[22] / LMR_Q16 / (256 * depth + 255));
         }
         else
         {
@@ -1361,6 +1373,7 @@ moves_loop:  // When in check, search starts here
             // Scale up reductions for expected ALL nodes
             if (allNode)
                 r += r * 254 / (256 * depth + 255);
+
 
             // ---- 采样 (φ(x), r) 用于 LMR 连续化最小二乘拟合 ----
             // 零开销保证：lmrSample=false 时整个分支被编译器跳过
@@ -1914,9 +1927,12 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 // LMR 连续化调优 (R_θ 决策核) — 特征清单 φ(x) 与常数盘点
 // ----------------------------------------------------------------------------
 // 目标：将 reduction() 基值与 Step 18/19 的全部硬编码常数统一为
-//       r = clamp(θᵀφ(x) · (1 + θ_A · allNode / (256·depth + 255)), 0, R_max)
+//       r = θᵀφ(x)，再由调用方按需追加 allNode 自指缩放 r += r·θ_A/(Q·(256d+255))，
+//       不截断以保证负扩展/大缩减与 legacy 一致。
 // 其中 φ(x) 为 25 维特征向量，θ 为 26 维参数向量（25 特征 + 1 allNode 缩放 θ_A）。
 // θ 采用 Q16 定点：实际值 = theta / 65536.0，θᵀφ = Σ(theta_i * phi_i) >> 16。
+// 特征 14-17 为 if/else-if 互斥分支（cutoffCnt>1 时 14-16 生效，否则 17 可能生效），非独立线性项。
+// allNode 缩放（特征 22）由调用方在 ttPv 补偿之后执行，不在此函数内。
 //
 // 下表为权威清单：编号 | 特征 φ_i(x) | 当前常数 | 来源 | θ₀(Q16)
 // ----|---------------------------|---------|----------------------|------------
@@ -1935,29 +1951,36 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 // 11  | cutNode                     | 3226    | L1257                | 211419136
 // 12  | cutNode * !ttMove           | 1036    | L1257                | 67895296
 // 13  | ttCapture                   | 1553    | L1261                | 101777408
-// 14  | (cutoffCnt > 1)             | 259     | L1265                | 16973824
-// 15  | (cutoffCnt > 2)             | 1019    | L1265                | 66781184
-// 16  | (cutoffCnt > 1) * allNode   | 1014    | L1265                | 66453504
-// 17  | -(move == ttMove)           | 2711    | L1269                | 177668096
+// 14  | (cutoffCnt > 1) [互斥A]     | 259     | L1265                | 16973824
+// 15  | (cutoffCnt > 2) [互斥A]     | 1019    | L1265                | 66781184
+// 16  | (cutoffCnt>1)*allNode [互斥A]| 1014   | L1265                | 66453504
+// 17  | -(move==ttMove) [互斥B]     | 2711    | L1269                | 177668096
 // 18  | -statScore                  | 956/8192| L1281                |    7648
 // 19  | !capture*clamp(alpha-eval,  | 3       | L1284                |   196608
 //     |   -65, 92)                  |         |                      |
 // 20  | !ttMove (Step 19 only)      | 980     | L1328                | 64225280
 // 21  | improving × ttPv (新交互)   | 0       | —                    |       0
-// 22  | θ_A: allNode 缩放系数       | 254     | L1288                | 16646144
+// 22  | θ_A: allNode 缩放系数       | 254     | L1288 (调用方外部)   | 16646144
 // 23  | depth × cutNode (新交互)    | 0       | —                    |       0
-// 24  | moveCount × ttPv (新交互)   | 0       | —                    |       0
+// 24  | moveCount                     | -64/Q   | reduction() L1327   | -4194304
 // 25  | improving × cutNode (新交互)| 0       | —                    |       0
 // ----------------------------------------------------------------------------
 // 注意：
 //  - 特征 4 已合并原特征 4 (L1093 +923) 与原特征 5 (L1245 -2357)，
 //    合并后 θ = 923 - 2357 = -1434 (Q16 = -94071808)。
+//    由于 Singular Extension 递归搜索可能修改 ss->ttPv，+923 与 -2357
+//    实际使用不同 ttPv 值；调用方在 lmrContinuous 路径追加补偿
+//    r += 923*(oldTtPv - ss->ttPv) 以逐位对齐 legacy。
+//  - 特征 14-17 为 if/else-if 互斥分支：cutoffCnt>1 时 14/15/16 生效，
+//    否则若 move==ttMove 则 17 生效。非独立可加线性项。
+//  - 特征 22 (allNode 缩放) 由调用方在 ttPv 补偿之后外部执行，
+//    不在 reduction_lmr() 内部，以与 legacy 执行顺序一致。
 //  - 特征 1 的 φ 含运行时除法 (-delta/rootDelta)，θ₁=1128 为整数。
 //  - 特征 10 的 φ 含预除 30382，θ₁₀=1.0(Q16)。
 //  - 特征 18 的 θ = 956/8192 已折算为定点 7648，φ = -statScore。
 //  - 特征 20 仅在 Step 19 (LMR 跳过) 路径生效。
-//  - 新交互项 5/21/23/24/25 的 θ₀ = 0，初始行为与合并后基线完全一致。
-//  - R_max = 1024 * (newDepth - 1)，保证 r/1024 < newDepth-1 即 d >= 1。
+//  - 新交互项 5/21/23/25 的 θ₀ = 0，初始行为与合并后基线完全一致。
+//    （特征 24 已改为 moveCount 线性项，θ₀ = -64，对应 legacy r -= moveCount*64。）
 // ============================================================================
 
 // LMR 特征名称（用于 export_theta 输出与调试）
@@ -1986,7 +2009,7 @@ static constexpr const char* LmrFeatureNames[Search::Worker::LMR_THETA_SIZE] = {
   "improving_x_ttPv",      // 21  (新交互项)
   "theta_A_allNode_scale", // 22
   "depth_x_cutNode",       // 23  (新交互项)
-  "moveCount_x_ttPv",      // 24  (新交互项)
+  "moveCount",             // 24  (moveCount 线性项)
   "improving_x_cutNode"    // 25  (新交互项)
 };
 
@@ -2023,7 +2046,7 @@ void Search::Worker::init_lmr_theta() {
       0,               // 21: improving × ttPv (新交互项，初始无影响)
       254 * Q,         // 22: θ_A allNode 缩放系数
       0,               // 23: depth × cutNode (新交互项，初始无影响)
-      0,               // 24: moveCount × ttPv (新交互项，初始无影响)
+      -64 * Q,         // 24: moveCount (legacy r -= moveCount*64, θ=-64)
       0,               // 25: improving × cutNode (新交互项，初始无影响)
     }};
 }
@@ -2057,20 +2080,25 @@ void Search::Worker::init_joint_theta() {
     jointTheta[40] = 176;    // se_multicut
 }
 
-// R_θ 决策核 —— 用连续参数化 θᵀφ(x) 计算 LMR 缩减量
-// r = clamp(θᵀφ(x) · (1 + θ_A · allNode / (256·depth + 255)), 0, R_max)
+// R_θ 决策核 —— 计算 LMR 缩减量的线性部分 θᵀφ(x)
+// 本函数仅计算 θᵀφ(x) 的线性累加（含特征 1/2/18 的特殊截断），
+// 不含 allNode 自指缩放——该缩放由调用方在 ttPv 补偿之后执行，
+// 以与 legacy Step18 的执行顺序（先全部线性调整，最后 allNode 缩放）逐位对齐。
+// 特征 14-17 为 if/else-if 互斥分支（cutoffCnt>1 时 14-16 生效，否则 17 可能生效），非独立线性项。
 // 特征 1 含运行时除法 (rootDelta)，单独处理以匹配 legacy 整数除法顺序。
+// 特征 2 (165/512)、特征 18 (956/8192) 的 θ 为非 Q 整数倍的分数 θ，单独 int 截断对齐 legacy 即时截断。
 // 特征 20 (Step 19) 不在此应用，由调用方在 Step 19 路径单独处理。
 int Search::Worker::reduction_lmr(const LmrFeatures& f) const {
     constexpr int Q = LMR_Q16;
     const int* t = lmrTheta.data();
+
 
     int reductionScale = reductions[f.depth] * reductions[f.moveCount];
 
     // 累加 θᵀφ(x)，用 int64_t 避免溢出 (theta~1.8e8, phi~1e4, 乘积~1.8e12)
     int64_t r64 = 0;
     r64 += int64_t(t[0]) * reductionScale;                              // 0
-    r64 += int64_t(t[2]) * (!f.improving * reductionScale);             // 2
+
     r64 += int64_t(t[3]);                                               // 3
     r64 += int64_t(t[4]) * f.ttPv;                                      // 4: ttPv (合并原 4+5)
     r64 += int64_t(t[5]) * (int(f.depth) * f.ttPv);                     // 5: depth × ttPv (新交互项)
@@ -2082,32 +2110,37 @@ int Search::Worker::reduction_lmr(const LmrFeatures& f) const {
     r64 += int64_t(t[11]) * f.cutNode;                                  // 11
     r64 += int64_t(t[12]) * (f.cutNode * !f.ttMoveExists);              // 12
     r64 += int64_t(t[13]) * f.ttCapture;                                // 13
-    r64 += int64_t(t[14]) * (f.cutoffCnt > 1);                          // 14
-    r64 += int64_t(t[15]) * (f.cutoffCnt > 2);                          // 15
-    r64 += int64_t(t[16]) * ((f.cutoffCnt > 1) * f.allNode);            // 16
-    r64 += int64_t(t[17]) * (-f.moveIsTtMove);                          // 17
-    r64 += int64_t(t[18]) * (-f.statScore);                             // 18
-    r64 += int64_t(t[19]) * (!f.capture * std::clamp(f.alpha - f.eval, -65, 92));  // 19
+    if (f.cutoffCnt > 1)
+    {
+        r64 += int64_t(t[14]);                              // 259
+        r64 += int64_t(t[15]) * (f.cutoffCnt > 2);          // 1019
+        r64 += int64_t(t[16]) * f.allNode;                  // 1014
+    }
+    else if (f.moveIsTtMove)
+    {
+        r64 += int64_t(t[17]) * (-1);                       // -2711
+    }
+
+    if (!f.capture && !is_decisive(f.alpha))
+        r64 += int64_t(t[19]) * std::clamp(f.alpha - f.eval, -65, 92);            // 19
     r64 += int64_t(t[21]) * (int(f.improving) * f.ttPv);                // 21: improving × ttPv (新交互项)
     r64 += int64_t(t[23]) * (int(f.depth) * f.cutNode);                 // 23: depth × cutNode (新交互项)
-    r64 += int64_t(t[24]) * (f.moveCount * f.ttPv);                     // 24: moveCount × ttPv (新交互项)
+    r64 += int64_t(t[24]) * f.moveCount;                                // 24: moveCount (legacy r -= moveCount*64, θ=-64)
     r64 += int64_t(t[25]) * (int(f.improving) * f.cutNode);             // 25: improving × cutNode (新交互项)
 
     int r = int(r64 / Q);
 
+    // 特征 2、18 的 θ 为分数 θ（165/512、956/8192，非 Q=65536 整数倍），
+    // 必须单独 int 截断，与 legacy 的即时 /512、/8192 截断逐位对齐；
+    // 若混入 r64 统一 /Q，其定点余数会污染其他项产生 ±1 分叉。
+    r += int(int64_t(t[2]) * (!f.improving * reductionScale) / Q);  // 2: !i*rs*165/512
+    r += int(int64_t(t[18]) * (-f.statScore) / Q);                  // 18: -statScore*956/8192
+
     // 特征 1：-delta * theta[1] / Q / rootDelta（特殊处理运行时除法）
     r -= int(int64_t(t[1]) * f.delta / Q / rootDelta);
 
-    // allNode 自指缩放: r += r * θ_A / Q / (256*depth + 255)
-    if (f.allNode)
-        r += int(int64_t(r) * t[22] / Q / (256 * f.depth + 255));
-
-    // 平滑截断 [0, R_max], R_max = 1024 * (newDepth - 1)
-    int rMax = 1024 * (f.newDepth - 1);
-    if (r < 0)
-        r = 0;
-    if (rMax > 0 && r > rMax)
-        r = rMax;
+    // allNode 自指缩放已移至调用方（lmrContinuous 路径），
+    // 在 ttPv 补偿之后执行，以与 legacy Step18 L1371-1372 的执行顺序逐位对齐。
 
     return r;
 }

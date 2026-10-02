@@ -1,0 +1,14 @@
+CompileFlags:
+  Compiler: C:/Users/76578/scoop/apps/gcc/current/bin/g++.exe
+  Add:
+    - -std=c++17
+    - -DIS_64BIT
+    - -DUSE_POPCNT
+    - -DUSE_AVX2
+    - -DUSE_VNNI
+    - -DUSE_AVXVNNI
+    - -DUSE_SSE41
+    - -DUSE_SSSE3
+    - -DUSE_SSE2
+    - -DUSE_PEXT
+    - -DARCH=x86-64-avxvnni
