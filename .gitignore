@@ -11,6 +11,9 @@ src/temp_builds
 src/pikafish*
 src/-lstdc++.res
 
+# Python extension modules (pybind11)
+*.so
+
 # Neural network for the NNUE evaluation
 **/*.nnue
 
@@ -37,6 +40,17 @@ validate_*.txt
 joint_validate_500_optimized_summary.json
 joint_validate_final_500_100k_checkpoint.json
 joint_theta_round13.txt
+
+# NNUE training artifacts
+tools/elo_match_*result*.txt
+tools/*_trace*.json
+tools/*_log*.json
+
+# NNUE Texel Tuning experimental scripts (P5-P7, path abandoned, kept locally for reference)
+tools/verify_fc1_fc2_gradients.py
+tools/verify_fc1_gradients_structural.py
+tools/train_spsa_int8.py
+tools/train_spsa_v2.py
 
 # IDE and tool directories
 .vs/

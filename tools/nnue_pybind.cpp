@@ -239,6 +239,7 @@ py::dict evaluate_with_trace(const std::string& fen) {
     result["psqt"]       = static_cast<int>(psqt);
     result["positional"] = trace.output;
     result["skip_0"]     = trace.skip_0;
+    result["fwd_out"]    = trace.fwd_out;  // raw fc_2_out + skip_0 (i32, pre 9600/16384 scale)
 
     py::list concat;
     for (int i = 0; i < NetworkArchitecture::FC_0_OUTPUTS * 2 + NetworkArchitecture::FC_1_OUTPUTS * 2; ++i)
@@ -301,6 +302,59 @@ void set_fc2_bias(int bucket, int value) {
     if (bucket < 0 || bucket >= LayerStacks)
         throw std::runtime_error("bucket out of range");
     network->get_network(bucket).fc_2.set_bias(0, value);
+}
+
+// ---------------------------------------------------------------------------
+// fc_1 parameter accessors
+//
+// fc_1 is AffineTransform<FC_0_OUTPUTS*2, FC_1_OUTPUTS> = <64, 32>.
+// Each of the LayerStacks (=16) layer stacks has its own fc_1 with 64*32=2048
+// int8 weights and 32 int32 biases.  Weight index i = output*64 + input,
+// i.e. i in [0, 2047].  Bias index k in [0, 31].
+// Weights are clamped to [-128, 127] on set.
+// ---------------------------------------------------------------------------
+int get_fc1_weight(int bucket, int idx) {
+    if (!network)
+        throw std::runtime_error("No network loaded.");
+    if (bucket < 0 || bucket >= LayerStacks)
+        throw std::runtime_error("bucket out of range");
+    auto& fc1 = network->get_network(bucket).fc_1;
+    if (idx < 0 || idx >= (int) std::remove_reference_t<decltype(fc1)>::num_weights())
+        throw std::runtime_error("idx out of range");
+    return static_cast<int>(fc1.get_weight(idx));
+}
+
+void set_fc1_weight(int bucket, int idx, int value) {
+    if (!network)
+        throw std::runtime_error("No network loaded.");
+    if (bucket < 0 || bucket >= LayerStacks)
+        throw std::runtime_error("bucket out of range");
+    auto& fc1 = network->get_network(bucket).fc_1;
+    if (idx < 0 || idx >= (int) std::remove_reference_t<decltype(fc1)>::num_weights())
+        throw std::runtime_error("idx out of range");
+    fc1.set_weight(idx, static_cast<i8>(std::clamp(value, -128, 127)));
+}
+
+int get_fc1_bias(int bucket, int idx) {
+    if (!network)
+        throw std::runtime_error("No network loaded.");
+    if (bucket < 0 || bucket >= LayerStacks)
+        throw std::runtime_error("bucket out of range");
+    auto& fc1 = network->get_network(bucket).fc_1;
+    if (idx < 0 || idx >= (int) std::remove_reference_t<decltype(fc1)>::num_biases())
+        throw std::runtime_error("idx out of range");
+    return static_cast<int>(fc1.get_bias(idx));
+}
+
+void set_fc1_bias(int bucket, int idx, int value) {
+    if (!network)
+        throw std::runtime_error("No network loaded.");
+    if (bucket < 0 || bucket >= LayerStacks)
+        throw std::runtime_error("bucket out of range");
+    auto& fc1 = network->get_network(bucket).fc_1;
+    if (idx < 0 || idx >= (int) std::remove_reference_t<decltype(fc1)>::num_biases())
+        throw std::runtime_error("idx out of range");
+    fc1.set_bias(idx, value);
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +428,18 @@ PYBIND11_MODULE(nnue_pybind, m) {
 
     m.def("set_fc2_bias", &set_fc2_bias, py::arg("bucket"), py::arg("value"),
           "Set fc_2 bias (int32) for given layer stack bucket.");
+
+    m.def("get_fc1_weight", &get_fc1_weight, py::arg("bucket"), py::arg("idx"),
+          "Get fc_1 weight (int8) for given bucket. idx = output*64 + input, range [0, 2047].");
+
+    m.def("set_fc1_weight", &set_fc1_weight, py::arg("bucket"), py::arg("idx"), py::arg("value"),
+          "Set fc_1 weight (int8, clipped to [-128,127]) for given bucket. idx = output*64 + input.");
+
+    m.def("get_fc1_bias", &get_fc1_bias, py::arg("bucket"), py::arg("idx"),
+          "Get fc_1 bias (int32) for given bucket and output index [0, 31].");
+
+    m.def("set_fc1_bias", &set_fc1_bias, py::arg("bucket"), py::arg("idx"), py::arg("value"),
+          "Set fc_1 bias (int32) for given bucket and output index [0, 31].");
 
     m.def("save_network", &save_network, py::arg("path"),
           "Save the current network to a zstd-compressed .nnue file.");

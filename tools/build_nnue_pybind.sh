@@ -42,6 +42,20 @@ if ! ls *.o >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- Rebuild all engine objects with -fPIC ---
+# A shared object requires position-independent code for any object that
+# references external shared-library symbols (e.g. the libstdc++ iostream vtables
+# used by uci.cpp / engine.cpp / benchmark.cpp).  The engine's default build does
+# not use -fPIC, so rebuild every engine object with it.  Only the .o files are
+# rebuilt here (the pikafish binary is left untouched); the pybind link below
+# collects the fresh PIC objects via `for f in *.o`.
+echo "=== Rebuilding engine objects with -fPIC ==="
+SRCS=$(find -L . \( -path './universal' -o -path './temp_builds' \) -prune -o \( -name '*.cpp' -o -name '*.S' \) -print | sed 's|^\./||')
+OBJS=$(printf '%s\n' "$SRCS" | sed -e 's|\.cpp$|.o|' -e 's|\.S$|.o|' | xargs -n1 basename | sort -u)
+find . -name '*.o' -delete
+make -j"$(nproc)" ARCH=x86-64-avxvnni EXTRACXXFLAGS=-fPIC $OBJS
+echo "engine objects rebuilt with -fPIC"
+
 echo "=== Compiling nnue_pybind.cpp ==="
 # pybind11 relies on C++ exceptions (throw/catch), so we must compile this
 # translation unit with -fexceptions even though the engine .o files were

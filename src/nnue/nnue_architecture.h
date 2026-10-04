@@ -152,7 +152,8 @@ struct NetworkArchitecture {
     // Returns the same output as propagate() plus the concat_buffer (fc_2 input)
     // and other intermediate values needed for gradient computation.
     struct PropagateTrace {
-        i32 output;           // final positional output value
+        i32 output;           // final positional output value (already scaled by 9600/16384)
+        i32 fwd_out;          // raw fc_2_out + skip_0 BEFORE the 9600/16384 scale (high precision)
         i32 skip_0;           // skip connection: fc_0_out[L2-2] - fc_0_out[L2-1]
         i32 fc_0_out[FC_0_OUTPUTS];                                    // 32 values
         i32 fc_1_out[FC_1_OUTPUTS];                                    // 32 values
@@ -205,6 +206,7 @@ struct NetworkArchitecture {
 
         PropagateTrace trace;
         trace.output = outputValue;
+        trace.fwd_out = fwdOut;
         trace.skip_0 = skip_0;
         std::copy_n(buffer.fc_0_out, FC_0_OUTPUTS, trace.fc_0_out);
         std::copy_n(buffer.fc_1_out, FC_1_OUTPUTS, trace.fc_1_out);
