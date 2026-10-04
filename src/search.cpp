@@ -1122,14 +1122,6 @@ moves_loop:  // When in check, search starts here
 
         int r = reduction(improving, depth, moveCount, delta);
 
-        // Increase reduction for ttPv nodes
-        // (*Scaler) Larger values scale well.
-        if (ss->ttPv)
-            r += 923;
-
-        // 保存 ttPv 快照——Singular Extension 递归搜索可能修改 ss->ttPv，
-        // lmrContinuous 路径需用 oldTtPv 补偿 +923 与 -2357 使用的 ttPv 不一致。
-        const bool oldTtPv = ss->ttPv;
 
         // Step 15. Pruning at shallow depths.
         // Depth conditions are important for mate finding.
@@ -1315,12 +1307,7 @@ moves_loop:  // When in check, search starts here
                           capture,        alpha,
                           eval,           newDepth};
             r = reduction_lmr(f);
-            // Singular Extension 递归搜索可能修改 ss->ttPv，导致 oldTtPv ≠ ss->ttPv。
-            // 特征4 = -1434 = 923-2357 假设 +923 和 -2357 使用同一 ttPv，
-            // 但 legacy 中 +923 用 oldTtPv（line 1128）、-2357 用 ss->ttPv（Step18）。
-            // 补偿差值：923 * (oldTtPv - ss->ttPv) 使 lmrContinuous 与 legacy 逐位对齐。
-            r += 923 * (int(oldTtPv) - int(ss->ttPv));
-            // allNode 自指缩放（在 ttPv 补偿之后执行，与 legacy L1371-1372 顺序一致）
+            // allNode 自指缩放
             if (allNode)
                 r += int(int64_t(r) * lmrTheta[22] / LMR_Q16 / (256 * depth + 255));
         }
@@ -1330,7 +1317,7 @@ moves_loop:  // When in check, search starts here
 
             // Decrease reduction for PvNodes (*Scaler)
             if (ss->ttPv)
-                r -= 2357 + PvNode * 959 + (ttData.value > alpha) * 1114
+                r -= 1434 + PvNode * 959 + (ttData.value > alpha) * 1114
                    + (ttData.depth >= depth) * (1136 + cutNode * 920);
 
             // Base reduction offset to compensate for other tweaks
@@ -1932,7 +1919,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 // 其中 φ(x) 为 25 维特征向量，θ 为 26 维参数向量（25 特征 + 1 allNode 缩放 θ_A）。
 // θ 采用 Q16 定点：实际值 = theta / 65536.0，θᵀφ = Σ(theta_i * phi_i) >> 16。
 // 特征 14-17 为 if/else-if 互斥分支（cutoffCnt>1 时 14-16 生效，否则 17 可能生效），非独立线性项。
-// allNode 缩放（特征 22）由调用方在 ttPv 补偿之后执行，不在此函数内。
+// allNode 缩放（特征 22）由调用方在 reduction_lmr() 之后执行，不在此函数内。
 //
 // 下表为权威清单：编号 | 特征 φ_i(x) | 当前常数 | 来源 | θ₀(Q16)
 // ----|---------------------------|---------|----------------------|------------
@@ -1941,7 +1928,7 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 //  2  | !improving * reductionScale | 165/512 | reduction() L1822    |    21120
 //  3  | 1 (截距: 1931+858)          | 2789    | reduction() L1822 +  | 182779904
 //     |                             |         | Step18 L1250         |
-//  4  | ttPv (合并原 4+5)           | -1434   | L1093+L1245          | -93978624
+//  4  | ttPv (方案B合并)            | -1434   | Step18 (原+923+-2357)| -93978624
 //  5  | depth × ttPv (新交互项)     | 0       | —                    |       0
 //  6  | ttPv * PvNode               | -959    | L1246                | -62849024
 //  7  | ttPv * (ttValue > alpha)    | -1114   | L1246                | -73007104
@@ -1966,14 +1953,12 @@ Value Search::Worker::qsearch(Position& pos, Stack* ss, Value alpha, Value beta)
 // 25  | improving × cutNode (新交互)| 0       | —                    |       0
 // ----------------------------------------------------------------------------
 // 注意：
-//  - 特征 4 已合并原特征 4 (L1093 +923) 与原特征 5 (L1245 -2357)，
-//    合并后 θ = 923 - 2357 = -1434 (Q16 = -94071808)。
-//    由于 Singular Extension 递归搜索可能修改 ss->ttPv，+923 与 -2357
-//    实际使用不同 ttPv 值；调用方在 lmrContinuous 路径追加补偿
-//    r += 923*(oldTtPv - ss->ttPv) 以逐位对齐 legacy。
+//  - 特征 4 (ttPv) θ₀ = -1434：原 legacy 在 Step14 区域 +923·ttPv 与
+//    Step18 内 -2357·ttPv 分两处累加。方案 B 已合并为 Step18 内 -1434·ttPv，
+//    消除 Singular Extension 递归修改 ss->ttPv 导致的时序分裂（Elo 验证无显著差异）。
 //  - 特征 14-17 为 if/else-if 互斥分支：cutoffCnt>1 时 14/15/16 生效，
 //    否则若 move==ttMove 则 17 生效。非独立可加线性项。
-//  - 特征 22 (allNode 缩放) 由调用方在 ttPv 补偿之后外部执行，
+//  - 特征 22 (allNode 缩放) 由调用方在 reduction_lmr() 之后外部执行，
 //    不在 reduction_lmr() 内部，以与 legacy 执行顺序一致。
 //  - 特征 1 的 φ 含运行时除法 (-delta/rootDelta)，θ₁=1128 为整数。
 //  - 特征 10 的 φ 含预除 30382，θ₁₀=1.0(Q16)。
@@ -1989,7 +1974,7 @@ static constexpr const char* LmrFeatureNames[Search::Worker::LMR_THETA_SIZE] = {
   "neg_delta_over_rootDelta",  // 1
   "non_improving_x_scale", // 2
   "intercept",             // 3
-  "ttPv_merged",           // 4  (合并原 4+5)
+  "ttPv_merged",           // 4  (方案B: +923+-2357→-1434)
   "depth_x_ttPv",          // 5  (新交互项)
   "ttPv_x_PvNode",         // 6
   "ttPv_x_ttValGtAlpha",   // 7
@@ -2026,7 +2011,7 @@ void Search::Worker::init_lmr_theta() {
       1128 * Q,        //  1: -delta/rootDelta
       165 * Q / 512,   //  2: !improving * reductionScale (165/512)
       2789 * Q,        //  3: 截距 (1931 + 858)
-      -1434 * Q,       //  4: ttPv (合并原 4+5: 923-2357=-1434)
+      -1434 * Q,       //  4: ttPv (方案B: 原+923+-2357→-1434)
       0,               //  5: depth × ttPv (新交互项，初始无影响)
       -959 * Q,        //  6: ttPv * PvNode
       -1114 * Q,       //  7: ttPv * (ttValue > alpha)
@@ -2082,7 +2067,7 @@ void Search::Worker::init_joint_theta() {
 
 // R_θ 决策核 —— 计算 LMR 缩减量的线性部分 θᵀφ(x)
 // 本函数仅计算 θᵀφ(x) 的线性累加（含特征 1/2/18 的特殊截断），
-// 不含 allNode 自指缩放——该缩放由调用方在 ttPv 补偿之后执行，
+// 不含 allNode 自指缩放——该缩放由调用方在 reduction_lmr() 之后执行，
 // 以与 legacy Step18 的执行顺序（先全部线性调整，最后 allNode 缩放）逐位对齐。
 // 特征 14-17 为 if/else-if 互斥分支（cutoffCnt>1 时 14-16 生效，否则 17 可能生效），非独立线性项。
 // 特征 1 含运行时除法 (rootDelta)，单独处理以匹配 legacy 整数除法顺序。
@@ -2100,7 +2085,7 @@ int Search::Worker::reduction_lmr(const LmrFeatures& f) const {
     r64 += int64_t(t[0]) * reductionScale;                              // 0
 
     r64 += int64_t(t[3]);                                               // 3
-    r64 += int64_t(t[4]) * f.ttPv;                                      // 4: ttPv (合并原 4+5)
+    r64 += int64_t(t[4]) * f.ttPv;                                      // 4: ttPv (方案B合并)
     r64 += int64_t(t[5]) * (int(f.depth) * f.ttPv);                     // 5: depth × ttPv (新交互项)
     r64 += int64_t(t[6]) * (f.ttPv * f.PvNode);                         // 6
     r64 += int64_t(t[7]) * (f.ttPv * f.ttValueGtAlpha);                 // 7
@@ -2140,7 +2125,7 @@ int Search::Worker::reduction_lmr(const LmrFeatures& f) const {
     r -= int(int64_t(t[1]) * f.delta / Q / rootDelta);
 
     // allNode 自指缩放已移至调用方（lmrContinuous 路径），
-    // 在 ttPv 补偿之后执行，以与 legacy Step18 L1371-1372 的执行顺序逐位对齐。
+    // 在 reduction_lmr() 之后执行，以与 legacy Step18 的执行顺序逐位对齐。
 
     return r;
 }
